@@ -16,25 +16,29 @@ under the same quantum-resistant key.
 | Component | What | State |
 |-----------|------|-------|
 | `wots` | Winternitz one-time signature core library | ✅ done, tested |
-| `quantum-vault` | Solana program (PDA vault, SOL + SPL tokens, key rotation) | ✅ done, builds to BPF |
+| `quantum-vault` | Native Solana program (PDA vault, SOL + SPL, key rotation) | ✅ done, builds to BPF |
 | `harness` | end-to-end LiteSVM tests (SOL + token + forgery) | ✅ done, passing |
 
-**Proven working:** the end-to-end tests open a vault, spend SOL *and* SPL
-tokens from it with Winternitz signatures, and confirm the vault rotates to the
-next one-time key — running the real compiled BPF program. On-chain cost is
-**~505–565k compute units** per spend (over the 200k default, so a
-`ComputeBudget` instruction is required; well under the 1.4M max).
+**Proven working:** the end-to-end tests open a vault, spend SOL *and* SPL tokens
+from it with Winternitz signatures, and confirm the vault rotates to the next
+one-time key — running the real compiled BPF program. A spend costs **~72–75k
+compute units**, comfortably under the 200k default (no `ComputeBudget`
+instruction needed).
 
 ```bash
-cargo test -p harness -- --nocapture   # see the compute-unit readout
+cargo build-sbf --manifest-path programs/quantum-vault/Cargo.toml   # build BPF
+cargo test -p harness -- --nocapture                                # run e2e + see CU
 ```
 
 ## The WOTS core (`crates/wots`)
 
 Pure-Rust Winternitz One-Time Signatures over Keccak-256 truncated to 224 bits,
-sized to fit a Solana transaction (840-byte signature, 28-byte public key).
-The 224-bit choice is deliberate: a 256-bit scheme's 1088-byte signature would
-overflow Solana's 1232-byte transaction limit once wrapped in an instruction.
+with Winternitz parameter `W=16`. `W` is the performance knob: on-chain
+verification walks each chain up to `W-1` times, so a small `W` means far fewer
+Keccak hashes — the dominant on-chain cost. Dropping from base-256 to `W=16` cut
+a spend from ~565k to ~72k compute units (~8×). The trade-off is a larger
+1652-byte signature that no longer fits one transaction (see the buffer flow
+below).
 
 ```bash
 cargo test -p wots                 # run the test suite
@@ -49,7 +53,7 @@ cargo run -p wots --example demo   # see the full lifecycle
 - **One-time use:** a keypair may sign exactly one message. Signing twice leaks
   the key. The vault handles this by committing the *next* public key on every
   spend and rotating to it (the "vault pattern").
-- **Compressed public key:** the 30 hash-chain tops are hashed together into a
+- **Compressed public key:** the 59 hash-chain tops are hashed together into a
   single 28-byte on-chain commitment.
 - **Checksum:** prevents the classic forgery where an attacker only raises
   message digits — doing so forces a checksum digit down, which needs a hash
@@ -58,23 +62,32 @@ cargo run -p wots --example demo   # see the full lifecycle
 ## How the vault works
 
 Funds live in a PDA whose address is bound to an immutable genesis WOTS public
-key, so the deposit address never changes. A withdrawal presents a Winternitz
-signature over the spend (domain-tagged, binding amount, destination, and the
-next key); the program verifies it against the vault's current key, moves the
-funds, and rotates `current_pubkey` to `next_pubkey` — retiring the spent
-one-time key forever. Authorization is purely cryptographic: any relayer can
-submit the transaction and pay the fee; only a valid WOTS signature moves funds.
+key, so the deposit address never changes. The same vault PDA also owns its SPL
+token accounts and signs token transfers via `invoke_signed`, so one
+quantum-resistant key guards SOL and any number of token mints.
 
-The same vault PDA owns its SPL associated token accounts and signs token
-transfers via `invoke_signed`, so one quantum-resistant key guards SOL and any
-number of token mints.
+A withdrawal is a short sequence, because the 1652-byte signature exceeds
+Solana's 1232-byte transaction limit:
+
+1. `init_sig_buffer` — create a signature-buffer PDA for the spend.
+2. `write_sig_buffer` ×N — upload the signature in transaction-sized chunks.
+3. `spend_sol` / `spend_token` — verify the buffered signature against the
+   vault's current key (over a domain-tagged message binding amount, destination,
+   and the next key), move the funds, rotate `current_pubkey` to `next_pubkey`,
+   and close the buffer (rent refunded).
+
+Authorization is purely cryptographic: any relayer can submit these transactions
+and pay the fees; only a valid WOTS signature moves funds. **Deposits need no
+program instruction** — sending SOL or SPL tokens to the vault's address / token
+account is an ordinary transfer.
 
 ### Instructions
 
-- `open_vault(genesis_pubkey, deposit)` — create + fund a vault
-- `spend(genesis_pubkey, amount, next_pubkey, signature)` — withdraw SOL, rotate
-- `deposit_token(genesis_pubkey, amount)` — deposit SPL tokens (permissionless)
-- `spend_token(genesis_pubkey, amount, next_pubkey, signature)` — withdraw SPL tokens, rotate
+- `OpenVault { genesis_pubkey, deposit }` — create + fund a vault
+- `InitSigBuffer { genesis_pubkey }` — open a signature buffer
+- `WriteSigBuffer { offset, chunk }` — upload signature bytes
+- `SpendSol { genesis_pubkey, amount, next_pubkey }` — withdraw SOL, rotate
+- `SpendToken { genesis_pubkey, amount, next_pubkey }` — withdraw SPL tokens, rotate
 
 ## Background
 
@@ -86,6 +99,6 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 ## Roadmap
 
 - ✅ SPL-token vaults
-- Native/Pinocchio port to lower the per-spend compute cost
+- ✅ Native program + `W=16` tuning (8× lower compute) with signature buffer
 - TypeScript client + devnet deployment
 - Security audit

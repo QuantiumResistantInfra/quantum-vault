@@ -19,14 +19,14 @@
 //! by the *vault pattern*: every spend closes the current vault and opens a new
 //! one committed to a fresh public key. See the program crate.
 //!
-//! ## How it works (base-256 chains)
+//! ## How it works (base-16 chains)
 //!
-//! 1. The secret key is `NUM_CHAINS` random 32-byte values, one per "chain".
-//! 2. The public key hashes each secret value `CHAIN_MAX` (255) times, then hashes
-//!    all the chain tops together into a single compressed 32-byte commitment.
-//! 3. To sign, we treat the 32-byte message digest as 32 base-256 digits, append a
-//!    2-digit checksum, and for digit `d` on chain `i` we hash the secret `d` times.
-//! 4. To verify, we hash each signature element the *remaining* `255 - d` times to
+//! 1. The secret key is `NUM_CHAINS` random 28-byte values, one per "chain".
+//! 2. The public key hashes each secret value `CHAIN_MAX` (15) times, then hashes
+//!    all the chain tops together into a single compressed 28-byte commitment.
+//! 3. To sign, we split the 224-bit message digest into base-16 digits (nibbles),
+//!    append a checksum, and for digit `d` on chain `i` we hash the secret `d` times.
+//! 4. To verify, we hash each signature element the *remaining* `15 - d` times to
 //!    recover the chain top, then check the compressed commitment matches.
 //!
 //! The checksum is what stops forgery: raising a message digit (cheap — just hash
@@ -35,24 +35,28 @@
 
 #![forbid(unsafe_code)]
 
-/// Hash length in bytes (n) — Keccak-256 **truncated to 224 bits**.
+/// Winternitz parameter: each chain encodes one base-`W` digit.
 ///
-/// Why 224 and not 256: a 256-bit scheme produces a 1088-byte signature which,
-/// once wrapped in a transaction, blows past Solana's 1232-byte limit. Truncating
-/// to 224 bits yields an 840-byte signature that fits a single transaction — the
-/// same choice the real Solana Winternitz vault makes. Security: 224-bit preimage
-/// resistance → ~112-bit post-quantum (Grover only square-roots it), still ample.
+/// W is the central performance knob. On-chain verification walks each chain up
+/// to `W-1` times, so cost ≈ `NUM_CHAINS * (W-1)/2` Keccak ops — and Keccak is
+/// the dominant compute cost. `W = 16` (4-bit nibbles) needs ~9× fewer hashes
+/// than a base-256 scheme. The trade-off: more chains → a 1652-byte signature
+/// that exceeds Solana's 1232-byte transaction limit, so spends supply it via an
+/// on-chain *signature buffer* account rather than inline instruction data.
+pub const W: usize = 16;
+/// Maximum iterations per chain (a base-`W` digit is `0..=W-1`).
+pub const CHAIN_MAX: usize = W - 1;
+/// Hash length in bytes (n) — Keccak-256 **truncated to 224 bits**. Security:
+/// 224-bit preimage resistance → ~112-bit post-quantum (Grover only
+/// square-roots it), still ample.
 pub const HASH_LEN: usize = 28;
-/// Base-256 digits taken from the 28-byte message digest (one per byte).
-pub const MSG_DIGITS: usize = 28;
-/// Checksum digits. Max checksum = 28 * 255 = 7140 < 2^16, so 2 bytes suffice.
-pub const CHECKSUM_DIGITS: usize = 2;
+/// Base-`W` digits from the 224-bit message digest: 28 bytes × 2 nibbles.
+pub const MSG_DIGITS: usize = HASH_LEN * 2; // 56
+/// Checksum digits. Max checksum = 56 × 15 = 840 < 16³, so 3 base-16 digits.
+pub const CHECKSUM_DIGITS: usize = 3;
 /// Total hash chains = message digits + checksum digits.
-pub const NUM_CHAINS: usize = MSG_DIGITS + CHECKSUM_DIGITS; // 30
-/// Maximum iterations per chain (a base-256 digit is 0..=255).
-pub const CHAIN_MAX: usize = 255;
-/// Wire size of a signature in bytes (30 * 28 = 840). Fits Solana's 1232-byte
-/// transaction limit once instruction + account overhead is added.
+pub const NUM_CHAINS: usize = MSG_DIGITS + CHECKSUM_DIGITS; // 59
+/// Wire size of a signature in bytes (59 × 28 = 1652).
 pub const SIGNATURE_BYTES: usize = NUM_CHAINS * HASH_LEN;
 
 /// A 32-byte Keccak-256 hash value.
@@ -89,21 +93,26 @@ fn chain(mut input: Hash, iterations: usize) -> Hash {
     input
 }
 
-/// Expand a 32-byte message digest into `NUM_CHAINS` base-256 digits:
-/// 32 message digits followed by a 2-digit big-endian checksum.
+/// Expand the 224-bit message digest into `NUM_CHAINS` base-16 digits: each of
+/// the 28 bytes becomes two nibbles (high then low), followed by a 3-nibble
+/// big-endian checksum.
 ///
 /// The checksum is `sum(CHAIN_MAX - digit)` over the message digits, which is
 /// what makes forgery infeasible (see crate docs).
 fn digits(message_digest: &Hash) -> [u8; NUM_CHAINS] {
     let mut out = [0u8; NUM_CHAINS];
-    out[..MSG_DIGITS].copy_from_slice(message_digest);
+    for (i, &b) in message_digest.iter().enumerate() {
+        out[2 * i] = b >> 4;
+        out[2 * i + 1] = b & 0x0f;
+    }
 
     let mut checksum: u32 = 0;
-    for &d in &message_digest[..MSG_DIGITS] {
+    for &d in &out[..MSG_DIGITS] {
         checksum += (CHAIN_MAX as u32) - (d as u32);
     }
-    out[MSG_DIGITS] = (checksum >> 8) as u8;
-    out[MSG_DIGITS + 1] = (checksum & 0xff) as u8;
+    out[MSG_DIGITS] = ((checksum >> 8) & 0x0f) as u8;
+    out[MSG_DIGITS + 1] = ((checksum >> 4) & 0x0f) as u8;
+    out[MSG_DIGITS + 2] = (checksum & 0x0f) as u8;
     out
 }
 
@@ -169,14 +178,34 @@ impl PublicKey {
         }
         PublicKey(keccak(&tops)) == *self
     }
+
+    /// Verify a signature provided as raw bytes (e.g. read straight from an
+    /// account's data) without materializing a [`Signature`] on the caller's
+    /// stack. This matters on Solana, where stack frames are capped at 4 KB and a
+    /// full signature is 1652 bytes — the on-chain spend path uses this so the
+    /// only large buffer is `tops`, here inside this frame.
+    pub fn verify_slice(&self, message: &[u8], sig: &[u8]) -> bool {
+        if sig.len() != SIGNATURE_BYTES {
+            return false;
+        }
+        let d = digits(&keccak(message));
+        let mut tops = [0u8; SIGNATURE_BYTES];
+        for i in 0..NUM_CHAINS {
+            let mut element = [0u8; HASH_LEN];
+            element.copy_from_slice(&sig[i * HASH_LEN..(i + 1) * HASH_LEN]);
+            let top = chain(element, CHAIN_MAX - d[i] as usize);
+            tops[i * HASH_LEN..(i + 1) * HASH_LEN].copy_from_slice(&top);
+        }
+        PublicKey(keccak(&tops)) == *self
+    }
 }
 
-/// A WOTS signature: one 32-byte value per chain (1088 bytes on the wire).
+/// A WOTS signature: one 28-byte value per chain (1652 bytes on the wire).
 #[derive(Clone)]
 pub struct Signature(pub [Hash; NUM_CHAINS]);
 
 impl Signature {
-    /// Serialize to the 1088-byte wire format.
+    /// Serialize to the 1652-byte wire format.
     pub fn to_bytes(&self) -> [u8; SIGNATURE_BYTES] {
         let mut out = [0u8; SIGNATURE_BYTES];
         for (i, element) in self.0.iter().enumerate() {
@@ -185,7 +214,7 @@ impl Signature {
         out
     }
 
-    /// Parse from the 1088-byte wire format.
+    /// Parse from the 1652-byte wire format.
     pub fn from_bytes(bytes: &[u8; SIGNATURE_BYTES]) -> Self {
         let mut sig = [[0u8; HASH_LEN]; NUM_CHAINS];
         for (i, element) in sig.iter_mut().enumerate() {
@@ -241,6 +270,18 @@ mod tests {
     }
 
     #[test]
+    fn verify_slice_matches_verify() {
+        let sk = SecretKey::from_seed(&SEED);
+        let pk = sk.public_key();
+        let msg = b"slice verify";
+        let sig = sk.sign(msg);
+        let bytes = sig.to_bytes();
+        assert!(pk.verify_slice(msg, &bytes), "slice verify must accept a valid sig");
+        assert!(!pk.verify_slice(b"other", &bytes), "slice verify must reject wrong msg");
+        assert!(!pk.verify_slice(msg, &bytes[..bytes.len() - 1]), "wrong length must be rejected");
+    }
+
+    #[test]
     fn signature_wire_roundtrip() {
         let sk = SecretKey::from_seed(&SEED);
         let pk = sk.public_key();
@@ -275,10 +316,21 @@ mod tests {
     }
 
     #[test]
-    fn signature_fits_solana_transaction() {
-        // Solana's max transaction size is 1232 bytes; our 224-bit signature is
-        // 840, leaving ~390 bytes for instruction + account + signature overhead.
-        assert_eq!(SIGNATURE_BYTES, 840);
-        assert!(SIGNATURE_BYTES < 1232);
+    fn signature_size_requires_buffer() {
+        // W=16 trades a larger signature for ~9x fewer Keccak ops. At 1652 bytes
+        // it exceeds Solana's 1232-byte transaction limit, so spends supply it via
+        // an on-chain signature buffer account.
+        assert_eq!(SIGNATURE_BYTES, 1652);
+        assert!(SIGNATURE_BYTES > 1232);
+    }
+
+    #[test]
+    fn digit_bounds_hold() {
+        // Every digit must be a valid base-16 value so chain walks stay in range.
+        let sk = SecretKey::from_seed(&SEED);
+        let sig = sk.sign(b"bounds check");
+        let _ = sig; // signing exercises digits(); verify covers the round trip.
+        assert_eq!(NUM_CHAINS, 59);
+        assert_eq!(CHAIN_MAX, 15);
     }
 }

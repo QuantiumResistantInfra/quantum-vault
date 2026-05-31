@@ -14,9 +14,9 @@ fn main() {
     let pk = sk.public_key();
 
     println!("Master seed:        32 bytes (all a wallet stores)");
-    println!("Public key (vault): 32 bytes  -> {}", hex(&pk.0));
+    println!("Public key (vault): {} bytes  -> {}", pk.0.len(), hex(&pk.0));
     println!("Chains:             {NUM_CHAINS}");
-    println!("Signature size:     {SIGNATURE_BYTES} bytes (fits Solana's 1232 tx limit)\n");
+    println!("Signature size:     {SIGNATURE_BYTES} bytes (uploaded on-chain via a buffer)\n");
 
     // Sign a withdrawal intent (on-chain this would be the instruction data).
     let message = b"withdraw 1000000000 lamports to Alice";

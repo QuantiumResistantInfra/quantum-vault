@@ -1,194 +1,405 @@
-//! Quantum-resistant vault for Solana.
+//! Quantum-resistant vault for Solana — native (no framework) implementation.
 //!
 //! Funds live in a PDA whose withdrawals are authorized not by an Ed25519 key
 //! (which Shor's algorithm would break) but by a **Winternitz one-time
 //! signature** verified on-chain with cheap Keccak hashing.
 //!
-//! ## The vault pattern (how the one-time constraint is handled)
+//! ## Why native + a signature buffer
 //!
-//! A WOTS key may sign only once. So every `spend` carries the *next* public key
-//! and the signature commits to it. On success the vault rotates `current_pubkey`
-//! to that next key — the spent key is retired forever and can never be reused.
-//! The vault's address (derived from the immutable `genesis_pubkey`) never
-//! changes, so deposits always go to the same place.
+//! Using a low Winternitz parameter (`W=16`) cuts on-chain hashing ~9× — but the
+//! signature grows to 1652 bytes, past Solana's 1232-byte transaction limit. So a
+//! spend is a short sequence: create a **signature buffer** PDA, write the
+//! signature into it across a couple of transactions, then run the spend, which
+//! reads the buffer, verifies, moves funds, rotates the one-time key, and closes
+//! the buffer. Going native (instead of Anchor) keeps the per-instruction
+//! overhead minimal now that hashing is no longer the dominant cost.
 //!
-//! Authorization is purely cryptographic: the Solana transaction can be sent by
-//! anyone (a relayer pays the fee); only a valid WOTS signature moves funds.
+//! ## Vault pattern
+//!
+//! A WOTS key signs only once. Every spend commits the *next* public key; on
+//! success the vault rotates `current_pubkey` to it, retiring the spent key. The
+//! vault address is derived from an immutable `genesis_pubkey`, so the deposit
+//! address never changes. Authorization is purely cryptographic — any relayer
+//! may submit the transactions; only a valid WOTS signature moves funds.
 
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_instruction;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+#![forbid(unsafe_code)]
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use solana_program::{
+    account_info::{next_account_info, AccountInfo},
+    declare_id,
+    entrypoint::ProgramResult,
+    instruction::{AccountMeta, Instruction},
+    program::invoke_signed,
+    program_error::ProgramError,
+    pubkey::Pubkey,
+    rent::Rent,
+    system_instruction,
+    sysvar::Sysvar,
+};
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
-/// WOTS signature size on the wire (30 chains * 28 bytes = 840).
-const SIG_LEN: usize = wots::SIGNATURE_BYTES;
+/// The SPL Token program.
+const SPL_TOKEN_ID: Pubkey =
+    solana_program::pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+const VAULT_TAG: u8 = 1;
+const SIGBUF_TAG: u8 = 2;
+
+/// Vault account: `[tag(1)][current_pubkey(28)][bump(1)]`.
+const VAULT_LEN: usize = 1 + 28 + 1;
+/// Signature buffer account: `[tag(1)][bump(1)][signature(1652)]`.
+const SIGBUF_LEN: usize = 2 + wots::SIGNATURE_BYTES;
 
 /// Domain-separation tags so a signature for one action type can never be
-/// replayed as another (e.g. a SOL spend reused as a token spend).
+/// replayed as another.
 const DOMAIN_SPEND_SOL: u8 = 0x01;
 const DOMAIN_SPEND_TOKEN: u8 = 0x02;
 
-#[program]
-pub mod quantum_vault {
-    use super::*;
+const VAULT_SEED: &[u8] = b"vault";
+const SIGBUF_SEED: &[u8] = b"sigbuf";
 
-    /// Create a vault bound to `genesis_pubkey` and fund it with `deposit` lamports.
-    pub fn open_vault(
-        ctx: Context<OpenVault>,
+/// Program errors (surfaced as `ProgramError::Custom`).
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub enum VaultError {
+    InvalidSignature = 0,
+    InsufficientFunds = 1,
+    BadTokenProgram = 2,
+    BufferTooSmall = 3,
+}
+
+impl From<VaultError> for ProgramError {
+    fn from(e: VaultError) -> Self {
+        ProgramError::Custom(e as u32)
+    }
+}
+
+/// Instruction set. Borsh-serialized; the leading byte is the variant index.
+#[derive(BorshSerialize, BorshDeserialize, Debug)]
+pub enum VaultInstruction {
+    /// Create a vault bound to `genesis_pubkey` and fund it with `deposit`.
+    /// Accounts: `[vault(w), funder(w,s), system_program]`.
+    OpenVault { genesis_pubkey: [u8; 28], deposit: u64 },
+    /// Create the signature buffer PDA for an in-flight spend.
+    /// Accounts: `[sig_buffer(w), payer(w,s), system_program]`.
+    InitSigBuffer { genesis_pubkey: [u8; 28] },
+    /// Write `chunk` into the signature buffer at `offset`.
+    /// Accounts: `[sig_buffer(w)]`.
+    WriteSigBuffer { offset: u16, chunk: Vec<u8> },
+    /// Verify the buffered signature, withdraw `amount` lamports, rotate, close.
+    /// Accounts: `[vault(w), sig_buffer(w), destination(w), rent_refund(w)]`.
+    SpendSol {
         genesis_pubkey: [u8; 28],
-        deposit: u64,
-    ) -> Result<()> {
-        let vault = &mut ctx.accounts.vault;
-        vault.current_pubkey = genesis_pubkey;
-        vault.bump = ctx.bumps.vault;
+        amount: u64,
+        next_pubkey: [u8; 28],
+    },
+    /// Verify the buffered signature, withdraw `amount` SPL tokens, rotate, close.
+    /// Accounts: `[vault(w), sig_buffer(w), mint, vault_token(w),
+    ///            destination_token(w), token_program, rent_refund(w)]`.
+    SpendToken {
+        genesis_pubkey: [u8; 28],
+        amount: u64,
+        next_pubkey: [u8; 28],
+    },
+}
 
-        // Top up the vault PDA beyond its rent-exempt minimum.
-        if deposit > 0 {
-            let ix = system_instruction::transfer(
-                &ctx.accounts.funder.key(),
-                &vault.key(),
-                deposit,
-            );
-            anchor_lang::solana_program::program::invoke(
-                &ix,
-                &[
-                    ctx.accounts.funder.to_account_info(),
-                    vault.to_account_info(),
-                    ctx.accounts.system_program.to_account_info(),
-                ],
-            )?;
+#[cfg(not(feature = "no-entrypoint"))]
+solana_program::entrypoint!(process_instruction);
+
+pub fn process_instruction(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    data: &[u8],
+) -> ProgramResult {
+    match VaultInstruction::try_from_slice(data)
+        .map_err(|_| ProgramError::InvalidInstructionData)?
+    {
+        VaultInstruction::OpenVault { genesis_pubkey, deposit } => {
+            open_vault(program_id, accounts, genesis_pubkey, deposit)
         }
-        Ok(())
-    }
-
-    /// Withdraw `amount` lamports to `destination`, authorized by a WOTS
-    /// signature over the spend, then rotate the vault to `next_pubkey`.
-    pub fn spend(
-        ctx: Context<Spend>,
-        genesis_pubkey: [u8; 28],
-        amount: u64,
-        next_pubkey: [u8; 28],
-        signature: Vec<u8>,
-    ) -> Result<()> {
-        require!(signature.len() == SIG_LEN, VaultError::BadSignatureLength);
-
-        let vault = &mut ctx.accounts.vault;
-        let destination = &ctx.accounts.destination;
-
-        // Rebuild the exact bytes the owner signed off-chain. Binding all of
-        // these makes the signature un-redirectable and vault-specific.
-        let message = spend_message(&genesis_pubkey, amount, &destination.key(), &next_pubkey);
-
-        // Verify against the vault's CURRENT one-time public key.
-        let mut sig_bytes = [0u8; SIG_LEN];
-        sig_bytes.copy_from_slice(&signature);
-        let sig = wots::Signature::from_bytes(&sig_bytes);
-        let pk = wots::PublicKey(vault.current_pubkey);
-        require!(pk.verify(&message, &sig), VaultError::InvalidSignature);
-
-        // Move lamports out of the program-owned vault, keeping it rent-exempt.
-        let vault_ai = vault.to_account_info();
-        let rent_min = Rent::get()?.minimum_balance(vault_ai.data_len());
-        let available = vault_ai.lamports().saturating_sub(rent_min);
-        require!(amount <= available, VaultError::InsufficientFunds);
-
-        **vault_ai.try_borrow_mut_lamports()? -= amount;
-        **destination.to_account_info().try_borrow_mut_lamports()? += amount;
-
-        // Rotate: the spent key is now dead; the next one controls the vault.
-        vault.current_pubkey = next_pubkey;
-        Ok(())
-    }
-
-    /// Deposit SPL tokens into the vault's token account. Permissionless: anyone
-    /// may add funds. Creates the vault's associated token account on first use.
-    pub fn deposit_token(
-        ctx: Context<DepositToken>,
-        genesis_pubkey: [u8; 28],
-        amount: u64,
-    ) -> Result<()> {
-        // `genesis_pubkey` is consumed by the #[instruction(..)] seeds check on
-        // the accounts struct; nothing further to do with it in the body.
-        let _ = genesis_pubkey;
-        let cpi = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.depositor_token_account.to_account_info(),
-                to: ctx.accounts.vault_token_account.to_account_info(),
-                authority: ctx.accounts.depositor.to_account_info(),
-            },
-        );
-        token::transfer(cpi, amount)?;
-        Ok(())
-    }
-
-    /// Withdraw `amount` SPL tokens to `destination_token_account`, authorized by
-    /// a WOTS signature, then rotate the vault to `next_pubkey`. The vault PDA
-    /// signs the token transfer as the token account's owner.
-    pub fn spend_token(
-        ctx: Context<SpendToken>,
-        genesis_pubkey: [u8; 28],
-        amount: u64,
-        next_pubkey: [u8; 28],
-        signature: Vec<u8>,
-    ) -> Result<()> {
-        require!(signature.len() == SIG_LEN, VaultError::BadSignatureLength);
-
-        // Rebuild and verify the signed message against the vault's current key.
-        let message = spend_token_message(
-            &genesis_pubkey,
-            &ctx.accounts.mint.key(),
-            amount,
-            &ctx.accounts.destination_token_account.key(),
-            &next_pubkey,
-        );
-        let mut sig_bytes = [0u8; SIG_LEN];
-        sig_bytes.copy_from_slice(&signature);
-        let sig = wots::Signature::from_bytes(&sig_bytes);
-        let pk = wots::PublicKey(ctx.accounts.vault.current_pubkey);
-        require!(pk.verify(&message, &sig), VaultError::InvalidSignature);
-
-        // Transfer tokens out, signed by the vault PDA as token-account owner.
-        let bump = ctx.accounts.vault.bump;
-        let signer_seeds: &[&[&[u8]]] = &[&[b"vault", genesis_pubkey.as_ref(), &[bump]]];
-        let cpi = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            Transfer {
-                from: ctx.accounts.vault_token_account.to_account_info(),
-                to: ctx.accounts.destination_token_account.to_account_info(),
-                authority: ctx.accounts.vault.to_account_info(),
-            },
-            signer_seeds,
-        );
-        token::transfer(cpi, amount)?;
-
-        // Rotate to the next one-time key.
-        ctx.accounts.vault.current_pubkey = next_pubkey;
-        Ok(())
+        VaultInstruction::InitSigBuffer { genesis_pubkey } => {
+            init_sig_buffer(program_id, accounts, genesis_pubkey)
+        }
+        VaultInstruction::WriteSigBuffer { offset, chunk } => {
+            write_sig_buffer(program_id, accounts, offset, chunk)
+        }
+        VaultInstruction::SpendSol { genesis_pubkey, amount, next_pubkey } => {
+            spend_sol(program_id, accounts, genesis_pubkey, amount, next_pubkey)
+        }
+        VaultInstruction::SpendToken { genesis_pubkey, amount, next_pubkey } => {
+            spend_token(program_id, accounts, genesis_pubkey, amount, next_pubkey)
+        }
     }
 }
 
-/// Canonical message bound by a SOL spend signature.
-/// `0x01 || genesis || amount_le || destination || next_pubkey`.
-fn spend_message(
-    genesis: &[u8; 28],
+fn open_vault(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    genesis: [u8; 28],
+    deposit: u64,
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let vault = next_account_info(iter)?;
+    let funder = next_account_info(iter)?;
+    let system_program = next_account_info(iter)?;
+
+    let (pda, bump) = Pubkey::find_program_address(&[VAULT_SEED, &genesis], program_id);
+    if pda != *vault.key {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if !funder.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    let lamports = Rent::get()?.minimum_balance(VAULT_LEN) + deposit;
+    invoke_signed(
+        &system_instruction::create_account(
+            funder.key,
+            vault.key,
+            lamports,
+            VAULT_LEN as u64,
+            program_id,
+        ),
+        &[funder.clone(), vault.clone(), system_program.clone()],
+        &[&[VAULT_SEED, &genesis, &[bump]]],
+    )?;
+
+    let mut d = vault.try_borrow_mut_data()?;
+    d[0] = VAULT_TAG;
+    d[1..29].copy_from_slice(&genesis); // current_pubkey starts at genesis
+    d[29] = bump;
+    Ok(())
+}
+
+fn init_sig_buffer(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    genesis: [u8; 28],
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let buffer = next_account_info(iter)?;
+    let payer = next_account_info(iter)?;
+    let system_program = next_account_info(iter)?;
+
+    let (pda, bump) = Pubkey::find_program_address(&[SIGBUF_SEED, &genesis], program_id);
+    if pda != *buffer.key {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    if !payer.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
+    }
+
+    let lamports = Rent::get()?.minimum_balance(SIGBUF_LEN);
+    invoke_signed(
+        &system_instruction::create_account(
+            payer.key,
+            buffer.key,
+            lamports,
+            SIGBUF_LEN as u64,
+            program_id,
+        ),
+        &[payer.clone(), buffer.clone(), system_program.clone()],
+        &[&[SIGBUF_SEED, &genesis, &[bump]]],
+    )?;
+
+    let mut d = buffer.try_borrow_mut_data()?;
+    d[0] = SIGBUF_TAG;
+    d[1] = bump;
+    Ok(())
+}
+
+fn write_sig_buffer(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    offset: u16,
+    chunk: Vec<u8>,
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let buffer = next_account_info(iter)?;
+
+    if buffer.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let mut d = buffer.try_borrow_mut_data()?;
+    if d.len() != SIGBUF_LEN || d[0] != SIGBUF_TAG {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let start = 2 + offset as usize;
+    let end = start
+        .checked_add(chunk.len())
+        .ok_or(VaultError::BufferTooSmall)?;
+    if end > SIGBUF_LEN {
+        return Err(VaultError::BufferTooSmall.into());
+    }
+    d[start..end].copy_from_slice(&chunk);
+    Ok(())
+}
+
+// `#[inline(never)]` keeps the 1652-byte signature buffers out of the shared
+// `process_instruction` frame, which would otherwise exceed BPF's 4096-byte stack.
+#[inline(never)]
+fn spend_sol(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    genesis: [u8; 28],
     amount: u64,
-    destination: &Pubkey,
-    next: &[u8; 28],
-) -> Vec<u8> {
-    let mut data = Vec::with_capacity(1 + 28 + 8 + 32 + 28);
-    data.push(DOMAIN_SPEND_SOL);
-    data.extend_from_slice(genesis);
-    data.extend_from_slice(&amount.to_le_bytes());
-    data.extend_from_slice(destination.as_ref());
-    data.extend_from_slice(next);
-    data
+    next: [u8; 28],
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let vault = next_account_info(iter)?;
+    let buffer = next_account_info(iter)?;
+    let destination = next_account_info(iter)?;
+    let rent_refund = next_account_info(iter)?;
+
+    let current = read_vault(vault, program_id, &genesis)?;
+    let message = spend_sol_message(&genesis, amount, destination.key, &next);
+    verify_buffered(buffer, program_id, &current, &message)?;
+
+    let min = Rent::get()?.minimum_balance(vault.data_len());
+    let available = vault.lamports().saturating_sub(min);
+    if amount > available {
+        return Err(VaultError::InsufficientFunds.into());
+    }
+    **vault.try_borrow_mut_lamports()? -= amount;
+    **destination.try_borrow_mut_lamports()? += amount;
+
+    rotate(vault, &next)?;
+    close_account(buffer, rent_refund)
 }
 
-/// Canonical message bound by a token spend signature.
-/// `0x02 || genesis || mint || amount_le || destination_token_account || next_pubkey`.
+#[inline(never)]
+fn spend_token(
+    program_id: &Pubkey,
+    accounts: &[AccountInfo],
+    genesis: [u8; 28],
+    amount: u64,
+    next: [u8; 28],
+) -> ProgramResult {
+    let iter = &mut accounts.iter();
+    let vault = next_account_info(iter)?;
+    let buffer = next_account_info(iter)?;
+    let mint = next_account_info(iter)?;
+    let vault_token = next_account_info(iter)?;
+    let destination_token = next_account_info(iter)?;
+    let token_program = next_account_info(iter)?;
+    let rent_refund = next_account_info(iter)?;
+
+    if *token_program.key != SPL_TOKEN_ID {
+        return Err(VaultError::BadTokenProgram.into());
+    }
+
+    let current = read_vault(vault, program_id, &genesis)?;
+    let bump = vault.try_borrow_data()?[29];
+    let message = spend_token_message(&genesis, mint.key, amount, destination_token.key, &next);
+    verify_buffered(buffer, program_id, &current, &message)?;
+
+    // SPL Token `Transfer` (tag 3): [source(w), destination(w), authority(s)].
+    let mut data = Vec::with_capacity(9);
+    data.push(3u8);
+    data.extend_from_slice(&amount.to_le_bytes());
+    let ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![
+            AccountMeta::new(*vault_token.key, false),
+            AccountMeta::new(*destination_token.key, false),
+            AccountMeta::new_readonly(*vault.key, true),
+        ],
+        data,
+    };
+    invoke_signed(
+        &ix,
+        &[
+            vault_token.clone(),
+            destination_token.clone(),
+            vault.clone(),
+            token_program.clone(),
+        ],
+        &[&[VAULT_SEED, &genesis, &[bump]]],
+    )?;
+
+    rotate(vault, &next)?;
+    close_account(buffer, rent_refund)
+}
+
+// --- helpers ---------------------------------------------------------------
+
+fn read_vault(
+    vault: &AccountInfo,
+    program_id: &Pubkey,
+    genesis: &[u8; 28],
+) -> Result<[u8; 28], ProgramError> {
+    if vault.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let d = vault.try_borrow_data()?;
+    if d.len() != VAULT_LEN || d[0] != VAULT_TAG {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let bump = d[29];
+    let expected = Pubkey::create_program_address(&[VAULT_SEED, genesis, &[bump]], program_id)
+        .map_err(|_| ProgramError::InvalidSeeds)?;
+    if expected != *vault.key {
+        return Err(ProgramError::InvalidSeeds);
+    }
+    let mut current = [0u8; 28];
+    current.copy_from_slice(&d[1..29]);
+    Ok(current)
+}
+
+/// Verify the WOTS signature stored in `buffer` against `current`/`message`,
+/// reading the 1652-byte signature straight from account data (no stack copy).
+#[inline(never)]
+fn verify_buffered(
+    buffer: &AccountInfo,
+    program_id: &Pubkey,
+    current: &[u8; 28],
+    message: &[u8],
+) -> ProgramResult {
+    if buffer.owner != program_id {
+        return Err(ProgramError::IllegalOwner);
+    }
+    let d = buffer.try_borrow_data()?;
+    if d.len() != SIGBUF_LEN || d[0] != SIGBUF_TAG {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let pk = wots::PublicKey(*current);
+    if pk.verify_slice(message, &d[2..2 + wots::SIGNATURE_BYTES]) {
+        Ok(())
+    } else {
+        Err(VaultError::InvalidSignature.into())
+    }
+}
+
+fn rotate(vault: &AccountInfo, next: &[u8; 28]) -> ProgramResult {
+    let mut d = vault.try_borrow_mut_data()?;
+    d[1..29].copy_from_slice(next);
+    Ok(())
+}
+
+/// Drain `account` into `refund` and zero it so the runtime reaps it.
+fn close_account(account: &AccountInfo, refund: &AccountInfo) -> ProgramResult {
+    let lamports = account.lamports();
+    **refund.try_borrow_mut_lamports()? += lamports;
+    **account.try_borrow_mut_lamports()? = 0;
+    let mut d = account.try_borrow_mut_data()?;
+    for b in d.iter_mut() {
+        *b = 0;
+    }
+    Ok(())
+}
+
+fn spend_sol_message(genesis: &[u8; 28], amount: u64, destination: &Pubkey, next: &[u8; 28]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(1 + 28 + 8 + 32 + 28);
+    m.push(DOMAIN_SPEND_SOL);
+    m.extend_from_slice(genesis);
+    m.extend_from_slice(&amount.to_le_bytes());
+    m.extend_from_slice(destination.as_ref());
+    m.extend_from_slice(next);
+    m
+}
+
 fn spend_token_message(
     genesis: &[u8; 28],
     mint: &Pubkey,
@@ -196,119 +407,12 @@ fn spend_token_message(
     destination: &Pubkey,
     next: &[u8; 28],
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(1 + 28 + 32 + 8 + 32 + 28);
-    data.push(DOMAIN_SPEND_TOKEN);
-    data.extend_from_slice(genesis);
-    data.extend_from_slice(mint.as_ref());
-    data.extend_from_slice(&amount.to_le_bytes());
-    data.extend_from_slice(destination.as_ref());
-    data.extend_from_slice(next);
-    data
-}
-
-#[account]
-pub struct Vault {
-    /// The currently-authorized WOTS public key (224-bit). Rotates every spend.
-    pub current_pubkey: [u8; 28],
-    pub bump: u8,
-}
-
-impl Vault {
-    /// 8-byte discriminator + 28-byte pubkey + 1-byte bump.
-    const LEN: usize = 8 + 28 + 1;
-}
-
-#[derive(Accounts)]
-#[instruction(genesis_pubkey: [u8; 28])]
-pub struct OpenVault<'info> {
-    #[account(
-        init,
-        payer = funder,
-        space = Vault::LEN,
-        seeds = [b"vault", genesis_pubkey.as_ref()],
-        bump
-    )]
-    pub vault: Account<'info, Vault>,
-    #[account(mut)]
-    pub funder: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(genesis_pubkey: [u8; 28])]
-pub struct Spend<'info> {
-    #[account(
-        mut,
-        seeds = [b"vault", genesis_pubkey.as_ref()],
-        bump = vault.bump
-    )]
-    pub vault: Account<'info, Vault>,
-    /// CHECK: a plain lamport recipient; it only ever receives funds.
-    #[account(mut)]
-    pub destination: UncheckedAccount<'info>,
-}
-
-#[derive(Accounts)]
-#[instruction(genesis_pubkey: [u8; 28])]
-pub struct DepositToken<'info> {
-    #[account(
-        seeds = [b"vault", genesis_pubkey.as_ref()],
-        bump = vault.bump
-    )]
-    pub vault: Account<'info, Vault>,
-    pub mint: Account<'info, Mint>,
-    /// The vault's associated token account, created on first deposit.
-    #[account(
-        init_if_needed,
-        payer = depositor,
-        associated_token::mint = mint,
-        associated_token::authority = vault,
-    )]
-    pub vault_token_account: Account<'info, TokenAccount>,
-    #[account(mut)]
-    pub depositor: Signer<'info>,
-    #[account(
-        mut,
-        constraint = depositor_token_account.mint == mint.key() @ VaultError::MintMismatch,
-    )]
-    pub depositor_token_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-#[instruction(genesis_pubkey: [u8; 28])]
-pub struct SpendToken<'info> {
-    #[account(
-        mut,
-        seeds = [b"vault", genesis_pubkey.as_ref()],
-        bump = vault.bump
-    )]
-    pub vault: Account<'info, Vault>,
-    pub mint: Account<'info, Mint>,
-    #[account(
-        mut,
-        associated_token::mint = mint,
-        associated_token::authority = vault,
-    )]
-    pub vault_token_account: Account<'info, TokenAccount>,
-    #[account(
-        mut,
-        constraint = destination_token_account.mint == mint.key() @ VaultError::MintMismatch,
-    )]
-    pub destination_token_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
-}
-
-#[error_code]
-pub enum VaultError {
-    #[msg("signature must be exactly 840 bytes")]
-    BadSignatureLength,
-    #[msg("WOTS signature verification failed")]
-    InvalidSignature,
-    #[msg("insufficient unlocked funds in vault")]
-    InsufficientFunds,
-    #[msg("token account mint does not match")]
-    MintMismatch,
+    let mut m = Vec::with_capacity(1 + 28 + 32 + 8 + 32 + 28);
+    m.push(DOMAIN_SPEND_TOKEN);
+    m.extend_from_slice(genesis);
+    m.extend_from_slice(mint.as_ref());
+    m.extend_from_slice(&amount.to_le_bytes());
+    m.extend_from_slice(destination.as_ref());
+    m.extend_from_slice(next);
+    m
 }
