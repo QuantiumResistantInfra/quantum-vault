@@ -258,6 +258,30 @@ button.danger:hover:not(:disabled) {
   padding-top: 16px;
   border-top: 1px dashed var(--line);
 }
+
+.holding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px;
+  border-bottom: 1px solid #1a212c;
+  font-size: 14px;
+}
+.holding:last-child {
+  border-bottom: none;
+}
+.holding .hsym {
+  font-weight: 600;
+}
+.holding a {
+  color: #cdd6e0;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  text-decoration: none;
+}
+.holding a:hover {
+  color: var(--accent2);
+}
 .tokens h3 {
   margin: 0 0 10px;
   font-size: 14px;

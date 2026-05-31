@@ -14,6 +14,8 @@ import {
   depositToken,
   withdrawToken,
   tokenBalance,
+  vaultHoldings,
+  Holding,
   toBase,
   fromBase,
 } from "./sdk/tokens";
@@ -65,6 +67,7 @@ export function App() {
   const [keyIndex, setKeyIndex] = useState<number | null>(null);
   const [feeTokens, setFeeTokens] = useState(0n);
   const [vaultTokens, setVaultTokens] = useState(0n);
+  const [holdings, setHoldings] = useState<Holding[]>([]);
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [showPhrase, setShowPhrase] = useState(false);
@@ -100,6 +103,7 @@ export function App() {
     setVaultBalance(info ? info.lamports : null);
     const current = await readCurrentPubkey(conn, wallet);
     setKeyIndex(current ? wallet.findIndex(current) : null);
+    setHoldings(info ? await vaultHoldings(conn, wallet.address) : []);
     if (mint) {
       setFeeTokens(await tokenBalance(conn, feePayer.publicKey, mint));
       setVaultTokens(await tokenBalance(conn, wallet.address, mint, true));
@@ -455,6 +459,32 @@ export function App() {
                 )}
               </div>
             </>
+          )}
+        </section>
+      )}
+
+      {wallet && vaultBalance !== null && (
+        <section className="card">
+          <h2>Vault holdings</h2>
+          <p className="muted">Everything held by {short(wallet.address.toBase58())} right now.</p>
+          <div className="holding">
+            <span className="hsym">◎ SOL</span>
+            <span className="bal">{sol(vaultBalance)}</span>
+          </div>
+          {holdings.length === 0 ? (
+            <p className="muted">No SPL tokens held.</p>
+          ) : (
+            holdings.map((t) => (
+              <div className="holding" key={t.mint}>
+                <a
+                  href={`https://explorer.solana.com/address/${t.mint}?cluster=devnet`}
+                  target="_blank"
+                >
+                  {short(t.mint)}
+                </a>
+                <span className="bal">{t.uiAmount}</span>
+              </div>
+            ))
           )}
         </section>
       )}

@@ -1,8 +1,15 @@
 // SPL-token support: create a test mint, deposit, and withdraw tokens from the
 // vault. Withdrawals reuse the same WOTS + signature-buffer flow as SOL.
 
-import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
 import {
+  Connection,
+  Keypair,
+  ParsedAccountData,
+  PublicKey,
+  TransactionInstruction,
+} from "@solana/web3.js";
+import {
+  TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
   createMint,
   createTransferInstruction,
@@ -36,6 +43,28 @@ export async function createTestMint(
   const ata = await getOrCreateAssociatedTokenAccount(conn, feePayer, mint, feePayer.publicKey);
   await mintTo(conn, feePayer, mint, ata.address, feePayer, toBase(uiAmount));
   return mint;
+}
+
+export interface Holding {
+  mint: string;
+  uiAmount: number;
+  decimals: number;
+}
+
+/** Every SPL token the vault PDA currently holds (non-zero balances). */
+export async function vaultHoldings(conn: Connection, vault: PublicKey): Promise<Holding[]> {
+  const res = await conn.getParsedTokenAccountsByOwner(vault, { programId: TOKEN_PROGRAM_ID }, "confirmed");
+  return res.value
+    .map(({ account }) => {
+      const info = (account.data as ParsedAccountData).parsed.info;
+      return {
+        mint: info.mint as string,
+        uiAmount: (info.tokenAmount.uiAmount as number) ?? 0,
+        decimals: info.tokenAmount.decimals as number,
+      };
+    })
+    .filter((t) => t.uiAmount > 0)
+    .sort((a, b) => b.uiAmount - a.uiAmount);
 }
 
 /** Token balance for `owner`'s associated token account (0 if it doesn't exist). */
