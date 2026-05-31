@@ -67,8 +67,8 @@ fn vault_pda(genesis: &[u8; 28], program_id: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"vault", genesis], program_id).0
 }
 
-fn sigbuf_pda(genesis: &[u8; 28], program_id: &Pubkey) -> Pubkey {
-    Pubkey::find_program_address(&[b"sigbuf", genesis], program_id).0
+fn sigbuf_pda(genesis: &[u8; 28], payer: &Pubkey, program_id: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"sigbuf", genesis, payer.as_ref()], program_id).0
 }
 
 fn vault_current_pubkey(svm: &LiteSVM, vault: &Pubkey) -> [u8; 28] {
@@ -81,7 +81,7 @@ fn vault_current_pubkey(svm: &LiteSVM, vault: &Pubkey) -> [u8; 28] {
 
 /// Create the signature buffer and upload `sig` into it in chunks that fit a tx.
 fn upload_signature(svm: &mut LiteSVM, payer: &Keypair, program_id: Pubkey, genesis: [u8; 28], sig: &[u8]) {
-    let sigbuf = sigbuf_pda(&genesis, &program_id);
+    let sigbuf = sigbuf_pda(&genesis, &payer.pubkey(), &program_id);
     send(
         svm,
         payer,
@@ -105,7 +105,10 @@ fn upload_signature(svm: &mut LiteSVM, payer: &Keypair, program_id: Pubkey, gene
             payer,
             &[ix(
                 program_id,
-                vec![AccountMeta::new(sigbuf, false)],
+                vec![
+                    AccountMeta::new(sigbuf, false),
+                    AccountMeta::new_readonly(payer.pubkey(), true),
+                ],
                 &VaultInstruction::WriteSigBuffer {
                     offset: offset as u16,
                     chunk: sig[offset..end].to_vec(),
@@ -216,7 +219,7 @@ fn sol_spend_and_rotate() {
             program_id,
             vec![
                 AccountMeta::new(vault, false),
-                AccountMeta::new(sigbuf_pda(&genesis, &program_id), false),
+                AccountMeta::new(sigbuf_pda(&genesis, &payer.pubkey(), &program_id), false),
                 AccountMeta::new(destination, false),
                 AccountMeta::new(payer.pubkey(), false),
             ],
@@ -228,7 +231,7 @@ fn sol_spend_and_rotate() {
     assert_eq!(svm.get_account(&destination).unwrap().lamports, amount, "recipient funded");
     assert_eq!(vault_current_pubkey(&svm, &vault), next, "vault rotated");
     // Buffer was closed.
-    assert!(svm.get_account(&sigbuf_pda(&genesis, &program_id)).map_or(true, |a| a.lamports == 0));
+    assert!(svm.get_account(&sigbuf_pda(&genesis, &payer.pubkey(), &program_id)).map_or(true, |a| a.lamports == 0));
 }
 
 #[test]
@@ -252,7 +255,7 @@ fn forged_signature_is_rejected() {
             program_id,
             vec![
                 AccountMeta::new(vault, false),
-                AccountMeta::new(sigbuf_pda(&genesis, &program_id), false),
+                AccountMeta::new(sigbuf_pda(&genesis, &payer.pubkey(), &program_id), false),
                 AccountMeta::new(destination, false),
                 AccountMeta::new(payer.pubkey(), false),
             ],
@@ -299,7 +302,7 @@ fn token_spend_and_rotate() {
             program_id,
             vec![
                 AccountMeta::new(vault, false),
-                AccountMeta::new(sigbuf_pda(&genesis, &program_id), false),
+                AccountMeta::new(sigbuf_pda(&genesis, &payer.pubkey(), &program_id), false),
                 AccountMeta::new_readonly(mint, false),
                 AccountMeta::new(vault_ata, false),
                 AccountMeta::new(recipient_ata, false),
@@ -314,4 +317,51 @@ fn token_spend_and_rotate() {
     assert_eq!(token_balance(&svm, &recipient_ata), amount, "recipient funded");
     assert_eq!(token_balance(&svm, &vault_ata), 600_000_000 - amount, "vault debited");
     assert_eq!(vault_current_pubkey(&svm, &vault), next, "vault rotated");
+}
+
+#[test]
+fn attacker_cannot_corrupt_victim_buffer() {
+    // F1: the signature buffer is scoped to its relayer; no one else can write it.
+    let (mut svm, victim, program_id) = setup();
+    let attacker = Keypair::new();
+    svm.airdrop(&attacker.pubkey(), 10 * LAMPORTS_PER_SOL).unwrap();
+
+    let sk0 = SecretKey::from_seed(&[7u8; 32]);
+    let genesis: [u8; 28] = sk0.public_key().0;
+    open_vault(&mut svm, &victim, program_id, genesis, 2 * LAMPORTS_PER_SOL);
+
+    // Victim creates their (relayer-scoped) buffer.
+    let victim_sigbuf = sigbuf_pda(&genesis, &victim.pubkey(), &program_id);
+    send(
+        &mut svm,
+        &victim,
+        &[ix(
+            program_id,
+            vec![
+                AccountMeta::new(victim_sigbuf, false),
+                AccountMeta::new(victim.pubkey(), true),
+                AccountMeta::new_readonly(system_program::ID, false),
+            ],
+            &VaultInstruction::InitSigBuffer { genesis_pubkey: genesis },
+        )],
+    );
+
+    // Attacker tries to overwrite the victim's buffer, signing as themselves.
+    let tx = Transaction::new_signed_with_payer(
+        &[ix(
+            program_id,
+            vec![
+                AccountMeta::new(victim_sigbuf, false),
+                AccountMeta::new_readonly(attacker.pubkey(), true),
+            ],
+            &VaultInstruction::WriteSigBuffer { offset: 0, chunk: vec![0xFFu8; 100] },
+        )],
+        Some(&attacker.pubkey()),
+        &[&attacker],
+        svm.latest_blockhash(),
+    );
+    assert!(
+        svm.send_transaction(tx).is_err(),
+        "attacker must not be able to write to the victim's buffer",
+    );
 }

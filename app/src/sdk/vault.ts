@@ -115,7 +115,7 @@ export async function uploadSignature(
   for (let offset = 0; offset < sig.length; offset += CHUNK) {
     const chunk = sig.slice(offset, Math.min(offset + CHUNK, sig.length));
     onProgress?.({ step: `Uploading signature (${offset}/${sig.length})` });
-    await sendTx(conn, feePayer, [writeSigBufferIx(genesis, offset, chunk)]);
+    await sendTx(conn, feePayer, [writeSigBufferIx(feePayer.publicKey, genesis, offset, chunk)]);
   }
 }
 

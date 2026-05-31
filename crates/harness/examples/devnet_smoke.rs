@@ -40,7 +40,8 @@ fn main() {
     let next: [u8; 28] = SecretKey::from_seed(&[seed0[0] ^ 0xFF; 32]).public_key().0;
 
     let vault = Pubkey::find_program_address(&[b"vault", &genesis], &program_id).0;
-    let sigbuf = Pubkey::find_program_address(&[b"sigbuf", &genesis], &program_id).0;
+    let sigbuf =
+        Pubkey::find_program_address(&[b"sigbuf", &genesis, payer.pubkey().as_ref()], &program_id).0;
     let destination = Keypair::new().pubkey();
 
     let deposit = LAMPORTS_PER_SOL / 50; // 0.02 SOL
@@ -77,7 +78,10 @@ fn main() {
         let end = (offset + CHUNK).min(sig.len());
         send(&client, &payer, &[ix(
             program_id,
-            vec![AccountMeta::new(sigbuf, false)],
+            vec![
+                AccountMeta::new(sigbuf, false),
+                AccountMeta::new_readonly(payer.pubkey(), true),
+            ],
             &VaultInstruction::WriteSigBuffer { offset: offset as u16, chunk: sig[offset..end].to_vec() },
         )], &format!("write_sig_buffer @{offset}"));
         offset = end;

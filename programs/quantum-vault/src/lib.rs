@@ -49,8 +49,12 @@ const SIGBUF_TAG: u8 = 2;
 
 /// Vault account: `[tag(1)][current_pubkey(28)][bump(1)]`.
 const VAULT_LEN: usize = 1 + 28 + 1;
-/// Signature buffer account: `[tag(1)][bump(1)][signature(1652)]`.
-const SIGBUF_LEN: usize = 2 + wots::SIGNATURE_BYTES;
+/// Signature buffer account: `[tag(1)][bump(1)][payer(32)][signature(1652)]`.
+/// The buffer is bound to the relayer that created it, and only that relayer can
+/// write to it — so no one can corrupt a victim's in-flight signature.
+const SIGBUF_LEN: usize = 2 + 32 + wots::SIGNATURE_BYTES;
+/// Byte offset where the signature begins inside the buffer.
+const SIGBUF_SIG_OFFSET: usize = 2 + 32;
 
 /// Domain-separation tags so a signature for one action type can never be
 /// replayed as another.
@@ -68,6 +72,7 @@ pub enum VaultError {
     InsufficientFunds = 1,
     BadTokenProgram = 2,
     BufferTooSmall = 3,
+    UnauthorizedBuffer = 4,
 }
 
 impl From<VaultError> for ProgramError {
@@ -82,11 +87,11 @@ pub enum VaultInstruction {
     /// Create a vault bound to `genesis_pubkey` and fund it with `deposit`.
     /// Accounts: `[vault(w), funder(w,s), system_program]`.
     OpenVault { genesis_pubkey: [u8; 28], deposit: u64 },
-    /// Create the signature buffer PDA for an in-flight spend.
+    /// Create the relayer-scoped signature buffer PDA `["sigbuf", genesis, payer]`.
     /// Accounts: `[sig_buffer(w), payer(w,s), system_program]`.
     InitSigBuffer { genesis_pubkey: [u8; 28] },
-    /// Write `chunk` into the signature buffer at `offset`.
-    /// Accounts: `[sig_buffer(w)]`.
+    /// Write `chunk` into the signature buffer at `offset`. Only the buffer's
+    /// own relayer (payer) may write. Accounts: `[sig_buffer(w), payer(s)]`.
     WriteSigBuffer { offset: u16, chunk: Vec<u8> },
     /// Verify the buffered signature, withdraw `amount` lamports, rotate, close.
     /// Accounts: `[vault(w), sig_buffer(w), destination(w), rent_refund(w)]`.
@@ -183,12 +188,13 @@ fn init_sig_buffer(
     let payer = next_account_info(iter)?;
     let system_program = next_account_info(iter)?;
 
-    let (pda, bump) = Pubkey::find_program_address(&[SIGBUF_SEED, &genesis], program_id);
-    if pda != *buffer.key {
-        return Err(ProgramError::InvalidSeeds);
-    }
     if !payer.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
+    }
+    let (pda, bump) =
+        Pubkey::find_program_address(&[SIGBUF_SEED, &genesis, payer.key.as_ref()], program_id);
+    if pda != *buffer.key {
+        return Err(ProgramError::InvalidSeeds);
     }
 
     let lamports = Rent::get()?.minimum_balance(SIGBUF_LEN);
@@ -201,12 +207,13 @@ fn init_sig_buffer(
             program_id,
         ),
         &[payer.clone(), buffer.clone(), system_program.clone()],
-        &[&[SIGBUF_SEED, &genesis, &[bump]]],
+        &[&[SIGBUF_SEED, &genesis, payer.key.as_ref(), &[bump]]],
     )?;
 
     let mut d = buffer.try_borrow_mut_data()?;
     d[0] = SIGBUF_TAG;
     d[1] = bump;
+    d[2..34].copy_from_slice(payer.key.as_ref());
     Ok(())
 }
 
@@ -218,15 +225,23 @@ fn write_sig_buffer(
 ) -> ProgramResult {
     let iter = &mut accounts.iter();
     let buffer = next_account_info(iter)?;
+    let payer = next_account_info(iter)?;
 
     if buffer.owner != program_id {
         return Err(ProgramError::IllegalOwner);
+    }
+    if !payer.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
     }
     let mut d = buffer.try_borrow_mut_data()?;
     if d.len() != SIGBUF_LEN || d[0] != SIGBUF_TAG {
         return Err(ProgramError::InvalidAccountData);
     }
-    let start = 2 + offset as usize;
+    // Only the relayer that created the buffer may write to it.
+    if d[2..34] != *payer.key.as_ref() {
+        return Err(VaultError::UnauthorizedBuffer.into());
+    }
+    let start = SIGBUF_SIG_OFFSET + offset as usize;
     let end = start
         .checked_add(chunk.len())
         .ok_or(VaultError::BufferTooSmall)?;
@@ -255,7 +270,7 @@ fn spend_sol(
 
     let current = read_vault(vault, program_id, &genesis)?;
     let message = spend_sol_message(&genesis, amount, destination.key, &next);
-    verify_buffered(buffer, program_id, &current, &message)?;
+    verify_buffered(buffer, program_id, &genesis, &current, &message)?;
 
     let min = Rent::get()?.minimum_balance(vault.data_len());
     let available = vault.lamports().saturating_sub(min);
@@ -293,7 +308,7 @@ fn spend_token(
     let current = read_vault(vault, program_id, &genesis)?;
     let bump = vault.try_borrow_data()?[29];
     let message = spend_token_message(&genesis, mint.key, amount, destination_token.key, &next);
-    verify_buffered(buffer, program_id, &current, &message)?;
+    verify_buffered(buffer, program_id, &genesis, &current, &message)?;
 
     // SPL Token `Transfer` (tag 3): [source(w), destination(w), authority(s)].
     let mut data = Vec::with_capacity(9);
@@ -354,6 +369,7 @@ fn read_vault(
 fn verify_buffered(
     buffer: &AccountInfo,
     program_id: &Pubkey,
+    genesis: &[u8; 28],
     current: &[u8; 28],
     message: &[u8],
 ) -> ProgramResult {
@@ -364,8 +380,17 @@ fn verify_buffered(
     if d.len() != SIGBUF_LEN || d[0] != SIGBUF_TAG {
         return Err(ProgramError::InvalidAccountData);
     }
+    // Confirm this is the canonical buffer for (genesis, its stored relayer).
+    let expected = Pubkey::create_program_address(
+        &[SIGBUF_SEED, genesis, &d[2..34], &[d[1]]],
+        program_id,
+    )
+    .map_err(|_| ProgramError::InvalidSeeds)?;
+    if expected != *buffer.key {
+        return Err(ProgramError::InvalidSeeds);
+    }
     let pk = wots::PublicKey(*current);
-    if pk.verify_slice(message, &d[2..2 + wots::SIGNATURE_BYTES]) {
+    if pk.verify_slice(message, &d[SIGBUF_SIG_OFFSET..SIGBUF_SIG_OFFSET + wots::SIGNATURE_BYTES]) {
         Ok(())
     } else {
         Err(VaultError::InvalidSignature.into())

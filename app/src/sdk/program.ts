@@ -23,8 +23,8 @@ export function vaultPda(genesis: Uint8Array): PublicKey {
   return PublicKey.findProgramAddressSync([VAULT_SEED, genesis], PROGRAM_ID)[0];
 }
 
-export function sigbufPda(genesis: Uint8Array): PublicKey {
-  return PublicKey.findProgramAddressSync([SIGBUF_SEED, genesis], PROGRAM_ID)[0];
+export function sigbufPda(genesis: Uint8Array, payer: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([SIGBUF_SEED, genesis, payer.toBytes()], PROGRAM_ID)[0];
 }
 
 // --- little-endian encoders --------------------------------------------------
@@ -81,7 +81,7 @@ export function initSigBufferIx(payer: PublicKey, genesis: Uint8Array): Transact
   return new TransactionInstruction({
     programId: PROGRAM_ID,
     keys: [
-      { pubkey: sigbufPda(genesis), isSigner: false, isWritable: true },
+      { pubkey: sigbufPda(genesis, payer), isSigner: false, isWritable: true },
       { pubkey: payer, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
@@ -90,13 +90,17 @@ export function initSigBufferIx(payer: PublicKey, genesis: Uint8Array): Transact
 }
 
 export function writeSigBufferIx(
+  payer: PublicKey,
   genesis: Uint8Array,
   offset: number,
   chunk: Uint8Array,
 ): TransactionInstruction {
   return new TransactionInstruction({
     programId: PROGRAM_ID,
-    keys: [{ pubkey: sigbufPda(genesis), isSigner: false, isWritable: true }],
+    keys: [
+      { pubkey: sigbufPda(genesis, payer), isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: false },
+    ],
     // Vec<u8> is borsh-encoded as u32 length prefix + bytes.
     data: ixData(2, u16le(offset), u32le(chunk.length), chunk),
   });
@@ -108,15 +112,15 @@ export function spendSolIx(
   amount: bigint,
   next: Uint8Array,
   destination: PublicKey,
-  rentRefund: PublicKey,
+  payer: PublicKey,
 ): TransactionInstruction {
   return new TransactionInstruction({
     programId: PROGRAM_ID,
     keys: [
       { pubkey: vault, isSigner: false, isWritable: true },
-      { pubkey: sigbufPda(genesis), isSigner: false, isWritable: true },
+      { pubkey: sigbufPda(genesis, payer), isSigner: false, isWritable: true },
       { pubkey: destination, isSigner: false, isWritable: true },
-      { pubkey: rentRefund, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: false, isWritable: true }, // rent refund
     ],
     data: ixData(3, genesis, u64le(amount), next),
   });
@@ -130,18 +134,18 @@ export function spendTokenIx(
   mint: PublicKey,
   vaultToken: PublicKey,
   destinationToken: PublicKey,
-  rentRefund: PublicKey,
+  payer: PublicKey,
 ): TransactionInstruction {
   return new TransactionInstruction({
     programId: PROGRAM_ID,
     keys: [
       { pubkey: vault, isSigner: false, isWritable: true },
-      { pubkey: sigbufPda(genesis), isSigner: false, isWritable: true },
+      { pubkey: sigbufPda(genesis, payer), isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: vaultToken, isSigner: false, isWritable: true },
       { pubkey: destinationToken, isSigner: false, isWritable: true },
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: rentRefund, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: false, isWritable: true }, // rent refund
     ],
     data: ixData(4, genesis, u64le(amount), next),
   });
