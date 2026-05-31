@@ -8,3 +8,7 @@ node_modules/
 dist/
 app/dist/
 *.tsbuildinfo
+.env
+.env.local
+app/.env
+app/.env.local

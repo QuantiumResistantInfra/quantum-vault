@@ -7,7 +7,7 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import { DEVNET_RPC, PROGRAM_ID } from "./sdk/program";
+import { RPC_URL, NETWORK, IS_DEVNET, PROGRAM_ID, explorerUrl } from "./sdk/program";
 import { VaultWallet, openVault, depositSol, withdrawSol, readCurrentPubkey } from "./sdk/vault";
 import {
   createTestMint,
@@ -51,7 +51,7 @@ const sol = (lamports: number) => (lamports / LAMPORTS_PER_SOL).toFixed(4);
 const short = (s: string) => `${s.slice(0, 4)}…${s.slice(-4)}`;
 
 export function App() {
-  const conn = useMemo(() => new Connection(DEVNET_RPC, "confirmed"), []);
+  const conn = useMemo(() => new Connection(RPC_URL, "confirmed"), []);
   const feePayer = useMemo(loadFeePayer, []);
 
   const [feeBalance, setFeeBalance] = useState(0);
@@ -79,6 +79,7 @@ export function App() {
   const [tDeposit, setTDeposit] = useState("100");
   const [tWithdraw, setTWithdraw] = useState("25");
   const [tWithdrawTo, setTWithdrawTo] = useState("");
+  const [mintInput, setMintInput] = useState("");
   const [confirm, setConfirm] = useState<null | {
     title: string;
     body: string;
@@ -248,6 +249,20 @@ export function App() {
       say(`✅ Test token ${short(m.toBase58())} created`);
     });
 
+  const loadMint = () =>
+    run("load token", async () => {
+      const m = new PublicKey(mintInput.trim());
+      localStorage.setItem(MINT_KEY, m.toBase58());
+      setMint(m);
+      setMintInput("");
+      say(`Loaded token ${short(m.toBase58())}`);
+    });
+
+  const clearMint = () => {
+    localStorage.removeItem(MINT_KEY);
+    setMint(null);
+  };
+
   const doDepositToken = () =>
     run("deposit token", async () => {
       say(`Depositing ${tDeposit} tokens…`);
@@ -273,7 +288,7 @@ export function App() {
     <div className="wrap">
       <header>
         <h1>
-          quantum-vault <span className="badge">devnet</span>
+          quantum-vault <span className="badge">{NETWORK === "mainnet-beta" ? "mainnet" : NETWORK}</span>
         </h1>
         <p className="sub">
           Post-quantum Solana vault — withdrawals authorized by a hash-based Winternitz one-time
@@ -281,7 +296,7 @@ export function App() {
         </p>
         <a
           className="prog"
-          href={`https://explorer.solana.com/address/${PROGRAM_ID.toBase58()}?cluster=devnet`}
+          href={explorerUrl(PROGRAM_ID.toBase58())}
           target="_blank"
         >
           program {short(PROGRAM_ID.toBase58())} ↗
@@ -296,9 +311,11 @@ export function App() {
           <span className="bal">{sol(feeBalance)} SOL</span>
         </div>
         <div className="import">
-          <button onClick={airdrop} disabled={busy}>
-            Airdrop 1 SOL
-          </button>
+          {IS_DEVNET && (
+            <button onClick={airdrop} disabled={busy}>
+              Airdrop 1 SOL
+            </button>
+          )}
           {phantom ? (
             <button onClick={fundFromPhantom} disabled={busy}>
               Fund burner 0.2 ◎ from Phantom
@@ -417,15 +434,34 @@ export function App() {
               <div className="tokens">
                 <h3>SPL tokens</h3>
                 {!mint ? (
-                  <button onClick={makeMint} disabled={busy}>
-                    Create test token (mint 1000 to fee payer)
-                  </button>
+                  <>
+                    <div className="import">
+                      <input
+                        placeholder="SPL token mint address"
+                        value={mintInput}
+                        onChange={(e) => setMintInput(e.target.value)}
+                      />
+                      <button onClick={loadMint} disabled={busy || !mintInput.trim()}>
+                        Load token
+                      </button>
+                    </div>
+                    {IS_DEVNET && (
+                      <div className="action">
+                        <button onClick={makeMint} disabled={busy}>
+                          Create test token (mint 1000 to fee payer)
+                        </button>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <>
                     <div className="row">
                       <code>{mint.toBase58()}</code>
                       <span className="bal">{fromBase(vaultTokens)} in vault</span>
                     </div>
+                    <button className="link" onClick={clearMint}>
+                      use a different token
+                    </button>
                     <p className="muted">Fee payer holds {fromBase(feeTokens)} tokens.</p>
                     <div className="action">
                       <label>Deposit tokens (from fee payer)</label>
@@ -477,7 +513,7 @@ export function App() {
             holdings.map((t) => (
               <div className="holding" key={t.mint}>
                 <a
-                  href={`https://explorer.solana.com/address/${t.mint}?cluster=devnet`}
+                  href={explorerUrl(t.mint)}
                   target="_blank"
                 >
                   {short(t.mint)}

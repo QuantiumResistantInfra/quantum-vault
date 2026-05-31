@@ -8,10 +8,47 @@ import {
 } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
+// The program id is the same on every cluster (same program keypair), so this
+// does not change for mainnet.
 export const PROGRAM_ID = new PublicKey(
   "34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD",
 );
-export const DEVNET_RPC = "https://api.devnet.solana.com";
+
+export type Cluster = "devnet" | "mainnet-beta";
+
+// ──────────────────────────────────────────────────────────────────────────
+//  MAINNET CUTOVER: flip this one constant to "mainnet-beta" and set a real RPC
+//  (VITE_RPC_URL). Everything else — buttons, explorer links, RPC — follows.
+// ──────────────────────────────────────────────────────────────────────────
+export const NETWORK: Cluster = "devnet";
+export const IS_DEVNET = NETWORK === "devnet";
+
+const PUBLIC_RPC: Record<Cluster, string> = {
+  devnet: "https://api.devnet.solana.com",
+  "mainnet-beta": "https://api.mainnet-beta.solana.com",
+};
+
+/** Read an optional custom RPC from Vite env (undefined under Node). */
+function envRpcUrl(): string | undefined {
+  try {
+    return (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_RPC_URL;
+  } catch {
+    return undefined;
+  }
+}
+
+/** App RPC. On mainnet set VITE_RPC_URL to a paid endpoint — the public
+ *  mainnet RPC is heavily rate-limited. */
+export const RPC_URL: string = envRpcUrl() || PUBLIC_RPC[NETWORK];
+
+/** Devnet test scripts (verify-*.ts) always target devnet regardless of NETWORK. */
+export const DEVNET_RPC = PUBLIC_RPC.devnet;
+
+/** Explorer link honoring the active cluster. */
+export function explorerUrl(address: string): string {
+  const suffix = NETWORK === "mainnet-beta" ? "" : `?cluster=${NETWORK}`;
+  return `https://explorer.solana.com/address/${address}${suffix}`;
+}
 
 const VAULT_SEED = new TextEncoder().encode("vault");
 const SIGBUF_SEED = new TextEncoder().encode("sigbuf");

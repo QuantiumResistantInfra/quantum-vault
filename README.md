@@ -127,6 +127,15 @@ npx tsx src/sdk/verify-token.ts  # prove the SPL-token flow
 npm run dev                      # launch the web UI
 ```
 
+### Switching networks
+
+The app is network-driven by one constant, `NETWORK`, in
+[`app/src/sdk/program.ts`](app/src/sdk/program.ts). Set it to `"mainnet-beta"`
+and the RPC, the airdrop/test-token buttons, and the explorer links all follow.
+For mainnet, set `VITE_RPC_URL` (see `app/.env.example`) to a paid RPC — the
+public mainnet endpoint is rate-limited. The program id is the same on every
+cluster, so it doesn't change.
+
 ## Background
 
 Hash-based WOTS is the only post-quantum signature family that runs cheaply on
