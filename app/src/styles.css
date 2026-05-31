@@ -209,6 +209,50 @@ input:focus {
   font-size: 12px;
 }
 
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 6, 11, 0.7);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+.modal {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 24px;
+  max-width: 420px;
+  width: 100%;
+}
+.modal h3 {
+  margin: 0 0 10px;
+  font-size: 17px;
+}
+.modal p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0 0 20px;
+}
+.modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+button.danger {
+  background: #b3261e;
+  border-color: #b3261e;
+  color: #fff;
+  font-weight: 600;
+}
+button.danger:hover:not(:disabled) {
+  border-color: #ff5a4d;
+}
+
 .tokens {
   margin-top: 18px;
   padding-top: 16px;

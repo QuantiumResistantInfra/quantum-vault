@@ -76,6 +76,13 @@ export function App() {
   const [tDeposit, setTDeposit] = useState("100");
   const [tWithdraw, setTWithdraw] = useState("25");
   const [tWithdrawTo, setTWithdrawTo] = useState("");
+  const [confirm, setConfirm] = useState<null | {
+    title: string;
+    body: string;
+    confirmLabel: string;
+    danger?: boolean;
+    onConfirm: () => void;
+  }>(null);
 
   const say = useCallback(
     (m: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 40)),
@@ -172,12 +179,34 @@ export function App() {
       say(`Imported vault ${short(w.address.toBase58())}`);
     });
 
-  const forget = () => {
+  const doForget = () => {
     localStorage.removeItem(MNEMONIC_KEY);
     setMnemonic(null);
     setShowPhrase(false);
     say("Forgot vault (still on-chain; re-import the phrase to access)");
   };
+
+  const confirmForget = () =>
+    setConfirm({
+      title: "Forget this vault?",
+      body:
+        "This wipes the recovery phrase from this browser. The vault and its funds stay on-chain, but you can ONLY get back in with the phrase. If you haven't saved it, the funds are gone for good.",
+      confirmLabel: "I've saved it — forget",
+      danger: true,
+      onConfirm: doForget,
+    });
+
+  const confirmDone = () =>
+    setConfirm({
+      title: "Saved your recovery phrase?",
+      body:
+        "Make sure you've written down all 24 words. Once you dismiss this, the phrase is hidden — and if this browser's storage is cleared, the phrase is the ONLY way to recover the vault's funds.",
+      confirmLabel: "Yes, I've saved it",
+      onConfirm: () => {
+        setShowPhrase(false);
+        setRevealed(false);
+      },
+    });
 
   const doOpen = () =>
     run("open", async () => {
@@ -304,7 +333,7 @@ export function App() {
         <section className="card">
           <div className="vhead">
             <h2>Your vault</h2>
-            <button className="link" onClick={forget}>
+            <button className="link" onClick={confirmForget}>
               forget
             </button>
           </div>
@@ -333,13 +362,7 @@ export function App() {
                 >
                   copy
                 </button>
-                <button
-                  className="link"
-                  onClick={() => {
-                    setShowPhrase(false);
-                    setRevealed(false);
-                  }}
-                >
+                <button className="link" onClick={confirmDone}>
                   done
                 </button>
               </div>
@@ -446,6 +469,30 @@ export function App() {
           )}
         </div>
       </section>
+
+      {confirm && (
+        <div className="modal-overlay" onClick={() => setConfirm(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>{confirm.title}</h3>
+            <p>{confirm.body}</p>
+            <div className="modal-actions">
+              <button className="link" onClick={() => setConfirm(null)}>
+                Cancel
+              </button>
+              <button
+                className={confirm.danger ? "danger" : "primary"}
+                onClick={() => {
+                  const fn = confirm.onConfirm;
+                  setConfirm(null);
+                  fn();
+                }}
+              >
+                {confirm.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
