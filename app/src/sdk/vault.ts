@@ -16,6 +16,7 @@ import {
   sendAndConfirmTransaction,
 } from "@solana/web3.js";
 import { keccak_256 } from "@noble/hashes/sha3";
+import { bytesToHex } from "@noble/hashes/utils";
 import { generateMnemonic, mnemonicToEntropy, entropyToMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { publicKey, secretKeyFromSeed, sign, SIGNATURE_BYTES } from "./wots";
@@ -30,6 +31,39 @@ import {
 } from "./program";
 
 const MAX_SCAN = 10_000; // how many spends back we can recover by scanning
+
+// --- one-time-key guard (F5) ------------------------------------------------
+// A WOTS key MUST sign exactly one message; signing a second, different message
+// with the same key leaks it. This refuses to do so. Re-signing the *same*
+// message (e.g. re-submitting a stuck withdrawal) is allowed. Backed by
+// localStorage in the browser (so it holds across tabs) and an in-memory map in
+// Node. NOTE: this does not protect against two fully independent processes that
+// share neither — never drive one vault from two uncoordinated signers.
+const memGuard = new Map<string, string>();
+
+function guardRead(slot: string): string | null {
+  if (typeof localStorage !== "undefined") return localStorage.getItem(slot);
+  return memGuard.get(slot) ?? null;
+}
+function guardWrite(slot: string, value: string): void {
+  if (typeof localStorage !== "undefined") localStorage.setItem(slot, value);
+  else memGuard.set(slot, value);
+}
+
+/** Throw unless key `index` is being signed over the same message as before. */
+export function assertSignOnce(vaultAddress: string, index: number, message: Uint8Array): void {
+  const slot = `qv_signed_${vaultAddress}_${index}`;
+  const messageHash = bytesToHex(keccak_256(message));
+  const prev = guardRead(slot);
+  if (prev !== null && prev !== messageHash) {
+    throw new Error(
+      `Refusing to sign one-time key #${index} a second time over a different ` +
+        `spend — that would leak the key. Let the pending withdrawal confirm ` +
+        `first, or re-submit the identical one.`,
+    );
+  }
+  guardWrite(slot, messageHash);
+}
 
 export class VaultWallet {
   readonly master: Uint8Array;
@@ -165,6 +199,7 @@ export async function withdrawSol(
   const next = wallet.pubkeyAt(k + 1);
 
   const message = spendSolMessage(wallet.genesis, amount, destination, next);
+  assertSignOnce(wallet.address.toBase58(), k, message);
   const sig = wallet.signAt(k, message);
   if (sig.length !== SIGNATURE_BYTES) throw new Error("bad signature length");
 

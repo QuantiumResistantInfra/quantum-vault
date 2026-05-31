@@ -21,6 +21,7 @@ import {
 import {
   VaultWallet,
   WithdrawProgress,
+  assertSignOnce,
   readCurrentPubkey,
   sendTx,
   uploadSignature,
@@ -117,6 +118,7 @@ export async function withdrawToken(
 
   // The signature binds the destination *token account* (ATA), not the wallet.
   const message = spendTokenMessage(wallet.genesis, mint, amount, destAta, next);
+  assertSignOnce(wallet.address.toBase58(), k, message);
   const sig = wallet.signAt(k, message);
   if (sig.length !== SIGNATURE_BYTES) throw new Error("bad signature length");
 
