@@ -1,20 +1,20 @@
 # quantum-vault
 
-A quantum-resistant vault for Solana, built from scratch as a learning project.
+Post-quantum secure vaults for Solana.
 
 Solana accounts are secured by Ed25519 — an elliptic-curve scheme that a
-sufficiently capable quantum computer breaks with Shor's algorithm. This project
-builds a vault whose withdrawals are instead authorized by a **hash-based
-signature** (Winternitz OTS), which has no curve for Shor to attack and only
-needs cheap hashing to verify on-chain.
+sufficiently capable quantum computer breaks with Shor's algorithm. quantum-vault
+authorizes every withdrawal with a **hash-based Winternitz one-time signature**
+instead: there is no elliptic curve for Shor to attack, and verification is cheap
+enough to run on-chain with Keccak hashing.
 
 ## Status
 
-| Phase | What | State |
-|-------|------|-------|
-| 1 | `wots` — Winternitz one-time signature core library | ✅ done, tested |
-| 2 | `quantum-vault` — Solana program (PDA vault + key rotation) | ✅ done, builds to BPF |
-| 3 | `harness` — end-to-end LiteSVM tests | ✅ done, passing |
+| Component | What | State |
+|-----------|------|-------|
+| `wots` | Winternitz one-time signature core library | ✅ done, tested |
+| `quantum-vault` | Solana program (PDA vault + key rotation) | ✅ done, builds to BPF |
+| `harness` | end-to-end LiteSVM tests | ✅ done, passing |
 
 **Proven working:** the end-to-end test opens a vault, spends from it with a
 Winternitz signature, and confirms the vault rotates to the next one-time key —
@@ -26,7 +26,7 @@ instruction is required; well under the 1.4M max).
 cargo test -p harness -- --nocapture   # see the compute-unit readout
 ```
 
-## Phase 1: the WOTS core (`crates/wots`)
+## The WOTS core (`crates/wots`)
 
 Pure-Rust Winternitz One-Time Signatures over Keccak-256 truncated to 224 bits,
 sized to fit a Solana transaction (840-byte signature, 28-byte public key).
@@ -41,22 +41,37 @@ cargo run -p wots --example demo   # see the full lifecycle
 ### Key facts
 
 - **Quantum-resistant:** security rests only on hash preimage resistance. Grover
-  (the best quantum attack) merely halves it, so Keccak-256 keeps ~128-bit
-  post-quantum security.
+  (the best quantum attack) merely square-roots it, so 224-bit Keccak keeps
+  ~112-bit post-quantum security.
 - **One-time use:** a keypair may sign exactly one message. Signing twice leaks
-  the key. The Phase-2 vault handles this by committing the *next* public key on
-  every spend and closing the old vault (the "vault pattern").
-- **Compressed public key:** the 34 hash-chain tops are hashed together into a
-  single 32-byte on-chain commitment.
+  the key. The vault handles this by committing the *next* public key on every
+  spend and rotating to it (the "vault pattern").
+- **Compressed public key:** the 30 hash-chain tops are hashed together into a
+  single 28-byte on-chain commitment.
 - **Checksum:** prevents the classic forgery where an attacker only raises
   message digits — doing so forces a checksum digit down, which needs a hash
   inversion.
 
+## How the vault works
+
+Funds live in a PDA whose address is bound to an immutable genesis WOTS public
+key, so the deposit address never changes. A withdrawal presents a Winternitz
+signature over `genesis || amount || destination || next_pubkey`; the program
+verifies it against the vault's current key, moves the lamports, and rotates
+`current_pubkey` to `next_pubkey` — retiring the spent one-time key forever.
+Authorization is purely cryptographic: any relayer can submit the transaction
+and pay the fee; only a valid WOTS signature moves funds.
+
 ## Background
 
-See the research notes that motivated the design choices (Falcon vs. WOTS,
-why the PDA layer, the protocol roadmap) — hash-based WOTS is the only family
-that runs cheaply on Solana *today* without waiting on unshipped protocol
-proposals (SIMD-0461 Falcon precompile, SIMD-0296 larger transactions).
+Hash-based WOTS is the only post-quantum signature family that runs cheaply on
+Solana today, without waiting on unshipped protocol proposals (SIMD-0461 Falcon
+precompile, SIMD-0296 larger transactions). See the design notes for the full
+rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 
-> ⚠️ Educational. Unaudited. Do not guard real funds with this.
+## Roadmap
+
+- SPL-token vaults (currently SOL/lamports)
+- Native/Pinocchio port to lower the per-spend compute cost
+- TypeScript client + devnet deployment
+- Security audit

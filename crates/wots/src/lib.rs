@@ -1,7 +1,7 @@
 //! # Winternitz One-Time Signatures (WOTS) over Keccak-256
 //!
-//! A self-contained, educational implementation of the signature scheme that
-//! powers quantum-resistant vaults on Solana.
+//! A self-contained, dependency-light implementation of the signature scheme
+//! that powers quantum-resistant vaults on Solana.
 //!
 //! ## Why this is quantum-resistant
 //!
