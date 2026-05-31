@@ -14,6 +14,9 @@ export const PROGRAM_ID = new PublicKey(
   "34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD",
 );
 
+// $QBIT token mint (Token-2022), launched on mainnet via Meteora DBC.
+export const TOKEN_CA = "QbitKUDMXMqe9nDVCjT4bCx1ferQPbaps5nFHUytYmh";
+
 export type Cluster = "devnet" | "mainnet-beta";
 
 // ──────────────────────────────────────────────────────────────────────────

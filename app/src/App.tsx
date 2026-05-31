@@ -7,7 +7,7 @@ import {
   SystemProgram,
   Transaction,
 } from "@solana/web3.js";
-import { RPC_URL, NETWORK, IS_DEVNET, PROGRAM_ID, explorerUrl } from "./sdk/program";
+import { RPC_URL, NETWORK, IS_DEVNET, PROGRAM_ID, TOKEN_CA, explorerUrl } from "./sdk/program";
 import { QubitMark } from "./Logo";
 import { VaultWallet, openVault, depositSol, withdrawSol, readCurrentPubkey } from "./sdk/vault";
 import {
@@ -81,6 +81,7 @@ export function App() {
   const [tWithdraw, setTWithdraw] = useState("25");
   const [tWithdrawTo, setTWithdrawTo] = useState("");
   const [mintInput, setMintInput] = useState("");
+  const [caCopied, setCaCopied] = useState(false);
   const [confirm, setConfirm] = useState<null | {
     title: string;
     body: string;
@@ -333,6 +334,37 @@ export function App() {
           </a>
         </div>
       </header>
+
+      <section className="cacard">
+        <div className="catop">
+          <span className="catag">$QBIT</span>
+          <span className="muted">Official token · always verify the CA here before buying</span>
+        </div>
+        <div className="carow">
+          <code className="ca">{TOKEN_CA}</code>
+          <button
+            className="copybtn"
+            onClick={() => {
+              navigator.clipboard?.writeText(TOKEN_CA);
+              setCaCopied(true);
+              setTimeout(() => setCaCopied(false), 1500);
+            }}
+          >
+            {caCopied ? "Copied ✓" : "Copy"}
+          </button>
+        </div>
+        <div className="calinks">
+          <a href={`https://dexscreener.com/solana/${TOKEN_CA}`} target="_blank" rel="noreferrer">
+            Chart ↗
+          </a>
+          <a href={`https://solscan.io/token/${TOKEN_CA}`} target="_blank" rel="noreferrer">
+            Solscan ↗
+          </a>
+          <a href={`https://jup.ag/swap/SOL-${TOKEN_CA}`} target="_blank" rel="noreferrer">
+            Trade on Jupiter ↗
+          </a>
+        </div>
+      </section>
 
       <section className="card">
         <h2>Fee payer (burner)</h2>
