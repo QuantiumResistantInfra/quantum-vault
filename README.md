@@ -111,17 +111,20 @@ cargo run -p harness --example devnet_smoke
 
 A React UI + TypeScript SDK for using a vault from the browser on devnet. The SDK
 ports WOTS **signing** to TypeScript (byte-for-byte compatible with the on-chain
-Rust verifier) and builds the full open → buffer → spend → rotate flow. A burner
-keypair pays fees; the vault's authority is a 24-word recovery phrase (a chain of
-one-time keys derived from it). Verified end-to-end against the live devnet
-program — a signature generated in the browser verifies on-chain, funds move, and
-the one-time key rotates.
+Rust verifier) and builds the full open → buffer → spend → rotate flow for both
+**SOL and SPL tokens**. A burner keypair relays the (multi-tx) flow popup-free;
+**Phantom** can be connected to fund the burner in one approval. The vault's
+authority is a 24-word recovery phrase (a chain of one-time keys derived from it),
+shown blurred behind a click-to-reveal. Verified end-to-end against the live
+devnet program — SOL and token signatures generated in the browser verify
+on-chain, funds move, and the one-time key rotates.
 
 ```bash
 cd app
 npm install
-npm run verify-devnet   # prove the TS SDK against the live program (Node)
-npm run dev             # launch the web UI
+npm run verify-devnet            # prove the SOL flow against the live program
+npx tsx src/sdk/verify-token.ts  # prove the SPL-token flow
+npm run dev                      # launch the web UI
 ```
 
 ## Background

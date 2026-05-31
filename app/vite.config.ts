@@ -1,8 +1,11 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 
-// @solana/web3.js expects a Node-style `Buffer`/`global` in the browser.
+// @solana/web3.js + spl-token need Node's Buffer/global/process in the browser.
 export default defineConfig({
-  plugins: [react()],
-  define: { global: "globalThis" },
+  plugins: [
+    react(),
+    nodePolyfills({ include: ["buffer"], globals: { Buffer: true, global: true, process: true } }),
+  ],
 });

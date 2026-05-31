@@ -1,16 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { DEVNET_RPC, PROGRAM_ID } from "./sdk/program";
 import {
-  VaultWallet,
-  openVault,
-  depositSol,
-  withdrawSol,
-  readCurrentPubkey,
-} from "./sdk/vault";
+  Connection,
+  Keypair,
+  LAMPORTS_PER_SOL,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+} from "@solana/web3.js";
+import { DEVNET_RPC, PROGRAM_ID } from "./sdk/program";
+import { VaultWallet, openVault, depositSol, withdrawSol, readCurrentPubkey } from "./sdk/vault";
+import {
+  createTestMint,
+  depositToken,
+  withdrawToken,
+  tokenBalance,
+  toBase,
+  fromBase,
+} from "./sdk/tokens";
 
 const FEEPAYER_KEY = "qv_feepayer";
 const MNEMONIC_KEY = "qv_mnemonic";
+const MINT_KEY = "qv_mint";
 
 function loadFeePayer(): Keypair {
   const saved = localStorage.getItem(FEEPAYER_KEY);
@@ -18,13 +28,22 @@ function loadFeePayer(): Keypair {
     try {
       return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(saved)));
     } catch {
-      /* regenerate below */
+      /* regenerate */
     }
   }
   const kp = Keypair.generate();
   localStorage.setItem(FEEPAYER_KEY, JSON.stringify(Array.from(kp.secretKey)));
   return kp;
 }
+
+interface PhantomProvider {
+  isPhantom?: boolean;
+  publicKey?: { toBytes(): Uint8Array };
+  connect(): Promise<{ publicKey: { toBytes(): Uint8Array } }>;
+  signTransaction(tx: Transaction): Promise<Transaction>;
+}
+const getPhantom = (): PhantomProvider | undefined =>
+  (window as unknown as { solana?: PhantomProvider }).solana;
 
 const sol = (lamports: number) => (lamports / LAMPORTS_PER_SOL).toFixed(4);
 const short = (s: string) => `${s.slice(0, 4)}…${s.slice(-4)}`;
@@ -34,11 +53,18 @@ export function App() {
   const feePayer = useMemo(loadFeePayer, []);
 
   const [feeBalance, setFeeBalance] = useState(0);
+  const [phantom, setPhantom] = useState<PublicKey | null>(null);
   const [mnemonic, setMnemonic] = useState<string | null>(() => localStorage.getItem(MNEMONIC_KEY));
   const wallet = useMemo(() => (mnemonic ? VaultWallet.fromMnemonic(mnemonic) : null), [mnemonic]);
+  const [mint, setMint] = useState<PublicKey | null>(() => {
+    const m = localStorage.getItem(MINT_KEY);
+    return m ? new PublicKey(m) : null;
+  });
 
   const [vaultBalance, setVaultBalance] = useState<number | null>(null);
   const [keyIndex, setKeyIndex] = useState<number | null>(null);
+  const [feeTokens, setFeeTokens] = useState(0n);
+  const [vaultTokens, setVaultTokens] = useState(0n);
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [showPhrase, setShowPhrase] = useState(false);
@@ -47,8 +73,14 @@ export function App() {
   const [depositAmt, setDepositAmt] = useState("0.05");
   const [withdrawAmt, setWithdrawAmt] = useState("0.01");
   const [withdrawTo, setWithdrawTo] = useState("");
+  const [tDeposit, setTDeposit] = useState("100");
+  const [tWithdraw, setTWithdraw] = useState("25");
+  const [tWithdrawTo, setTWithdrawTo] = useState("");
 
-  const say = useCallback((m: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 40)), []);
+  const say = useCallback(
+    (m: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 40)),
+    [],
+  );
 
   const refresh = useCallback(async () => {
     setFeeBalance(await conn.getBalance(feePayer.publicKey, "confirmed"));
@@ -61,7 +93,11 @@ export function App() {
     setVaultBalance(info ? info.lamports : null);
     const current = await readCurrentPubkey(conn, wallet);
     setKeyIndex(current ? wallet.findIndex(current) : null);
-  }, [conn, feePayer, wallet]);
+    if (mint) {
+      setFeeTokens(await tokenBalance(conn, feePayer.publicKey, mint));
+      setVaultTokens(await tokenBalance(conn, wallet.address, mint, true));
+    }
+  }, [conn, feePayer, wallet, mint]);
 
   useEffect(() => {
     refresh();
@@ -87,6 +123,35 @@ export function App() {
       say("✅ Airdropped 1 SOL");
     });
 
+  const connectPhantom = () =>
+    run("connect", async () => {
+      const p = getPhantom();
+      if (!p?.isPhantom) throw new Error("Phantom not found — install the extension");
+      const res = await p.connect();
+      setPhantom(new PublicKey(res.publicKey.toBytes()));
+      say("✅ Phantom connected");
+    });
+
+  const fundFromPhantom = () =>
+    run("fund", async () => {
+      const p = getPhantom();
+      if (!p || !phantom) throw new Error("connect Phantom first");
+      say("Funding burner 0.2 SOL from Phantom…");
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: phantom,
+          toPubkey: feePayer.publicKey,
+          lamports: LAMPORTS_PER_SOL / 5,
+        }),
+      );
+      tx.feePayer = phantom;
+      tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
+      const signed = await p.signTransaction(tx); // sent via our devnet connection
+      const sig = await conn.sendRawTransaction(signed.serialize());
+      await conn.confirmTransaction(sig, "confirmed");
+      say("✅ Burner funded from Phantom");
+    });
+
   const createVault = () => {
     const w = VaultWallet.random();
     localStorage.setItem(MNEMONIC_KEY, w.mnemonic);
@@ -94,6 +159,7 @@ export function App() {
     setShowPhrase(true);
     setRevealed(false);
     setWithdrawTo(feePayer.publicKey.toBase58());
+    setTWithdrawTo(feePayer.publicKey.toBase58());
     say(`Created vault ${short(w.address.toBase58())} — save your recovery phrase!`);
   };
 
@@ -122,18 +188,52 @@ export function App() {
 
   const doDeposit = () =>
     run("deposit", async () => {
-      const lamports = BigInt(Math.round(parseFloat(depositAmt) * LAMPORTS_PER_SOL));
       say(`Depositing ${depositAmt} SOL…`);
-      await depositSol(conn, feePayer, wallet!.address, lamports);
+      await depositSol(conn, feePayer, wallet!.address, BigInt(Math.round(parseFloat(depositAmt) * LAMPORTS_PER_SOL)));
       say("✅ Deposit confirmed");
     });
 
   const doWithdraw = () =>
     run("withdraw", async () => {
-      const lamports = BigInt(Math.round(parseFloat(withdrawAmt) * LAMPORTS_PER_SOL));
-      const dest = new PublicKey(withdrawTo.trim());
-      await withdrawSol(conn, feePayer, wallet!, lamports, dest, (p) => say(`  ${p.step}`));
-      say("✅ Withdrawal complete — key rotated");
+      await withdrawSol(
+        conn,
+        feePayer,
+        wallet!,
+        BigInt(Math.round(parseFloat(withdrawAmt) * LAMPORTS_PER_SOL)),
+        new PublicKey(withdrawTo.trim()),
+        (p) => say(`  ${p.step}`),
+      );
+      say("✅ SOL withdrawal complete — key rotated");
+    });
+
+  const makeMint = () =>
+    run("mint", async () => {
+      say("Creating test token + minting 1000 to fee payer…");
+      const m = await createTestMint(conn, feePayer, 1000);
+      localStorage.setItem(MINT_KEY, m.toBase58());
+      setMint(m);
+      say(`✅ Test token ${short(m.toBase58())} created`);
+    });
+
+  const doDepositToken = () =>
+    run("deposit token", async () => {
+      say(`Depositing ${tDeposit} tokens…`);
+      await depositToken(conn, feePayer, mint!, wallet!.address, toBase(parseFloat(tDeposit)));
+      say("✅ Token deposit confirmed");
+    });
+
+  const doWithdrawToken = () =>
+    run("withdraw token", async () => {
+      await withdrawToken(
+        conn,
+        feePayer,
+        wallet!,
+        mint!,
+        toBase(parseFloat(tWithdraw)),
+        new PublicKey(tWithdrawTo.trim()),
+        (p) => say(`  ${p.step}`),
+      );
+      say("✅ Token withdrawal complete — key rotated");
     });
 
   return (
@@ -157,14 +257,26 @@ export function App() {
 
       <section className="card">
         <h2>Fee payer (burner)</h2>
-        <p className="muted">A throwaway keypair that just pays network fees. Not the vault authority.</p>
+        <p className="muted">A throwaway keypair that just relays transactions. Not the vault authority.</p>
         <div className="row">
           <code>{feePayer.publicKey.toBase58()}</code>
           <span className="bal">{sol(feeBalance)} SOL</span>
         </div>
-        <button onClick={airdrop} disabled={busy}>
-          Airdrop 1 SOL
-        </button>
+        <div className="import">
+          <button onClick={airdrop} disabled={busy}>
+            Airdrop 1 SOL
+          </button>
+          {phantom ? (
+            <button onClick={fundFromPhantom} disabled={busy}>
+              Fund burner 0.2 ◎ from Phantom
+            </button>
+          ) : (
+            <button onClick={connectPhantom} disabled={busy}>
+              Connect Phantom
+            </button>
+          )}
+        </div>
+        {phantom && <p className="muted">Phantom: {short(phantom.toBase58())}</p>}
       </section>
 
       {!wallet ? (
@@ -251,7 +363,7 @@ export function App() {
           ) : (
             <>
               <div className="action">
-                <label>Deposit (from fee payer)</label>
+                <label>Deposit SOL (from fee payer)</label>
                 <div className="import">
                   <input value={depositAmt} onChange={(e) => setDepositAmt(e.target.value)} />
                   <button onClick={doDeposit} disabled={busy}>
@@ -260,7 +372,7 @@ export function App() {
                 </div>
               </div>
               <div className="action">
-                <label>Withdraw (signed by your one-time key)</label>
+                <label>Withdraw SOL (signed by your one-time key)</label>
                 <input
                   className="dest"
                   placeholder="destination address"
@@ -274,6 +386,51 @@ export function App() {
                   </button>
                 </div>
               </div>
+
+              <div className="tokens">
+                <h3>SPL tokens</h3>
+                {!mint ? (
+                  <button onClick={makeMint} disabled={busy}>
+                    Create test token (mint 1000 to fee payer)
+                  </button>
+                ) : (
+                  <>
+                    <div className="row">
+                      <code>{mint.toBase58()}</code>
+                      <span className="bal">{fromBase(vaultTokens)} in vault</span>
+                    </div>
+                    <p className="muted">Fee payer holds {fromBase(feeTokens)} tokens.</p>
+                    <div className="action">
+                      <label>Deposit tokens (from fee payer)</label>
+                      <div className="import">
+                        <input value={tDeposit} onChange={(e) => setTDeposit(e.target.value)} />
+                        <button onClick={doDepositToken} disabled={busy}>
+                          Deposit tokens
+                        </button>
+                      </div>
+                    </div>
+                    <div className="action">
+                      <label>Withdraw tokens (to a wallet; its token account is auto-created)</label>
+                      <input
+                        className="dest"
+                        placeholder="destination wallet address"
+                        value={tWithdrawTo}
+                        onChange={(e) => setTWithdrawTo(e.target.value)}
+                      />
+                      <div className="import">
+                        <input value={tWithdraw} onChange={(e) => setTWithdraw(e.target.value)} />
+                        <button
+                          className="primary"
+                          onClick={doWithdrawToken}
+                          disabled={busy || !tWithdrawTo.trim()}
+                        >
+                          Withdraw tokens
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </>
           )}
         </section>
@@ -282,7 +439,11 @@ export function App() {
       <section className="card">
         <h2>Activity</h2>
         <div className="log">
-          {log.length === 0 ? <span className="muted">No activity yet.</span> : log.map((l, i) => <div key={i}>{l}</div>)}
+          {log.length === 0 ? (
+            <span className="muted">No activity yet.</span>
+          ) : (
+            log.map((l, i) => <div key={i}>{l}</div>)
+          )}
         </div>
       </section>
     </div>

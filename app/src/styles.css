@@ -209,6 +209,17 @@ input:focus {
   font-size: 12px;
 }
 
+.tokens {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+.tokens h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--accent2);
+}
+
 .log {
   font-family: ui-monospace, monospace;
   font-size: 12px;

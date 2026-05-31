@@ -87,13 +87,36 @@ function eq(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
-async function send(
+export async function sendTx(
   conn: Connection,
   feePayer: Keypair,
   ixs: TransactionInstruction[],
 ): Promise<string> {
   const tx = new Transaction().add(...ixs);
   return sendAndConfirmTransaction(conn, tx, [feePayer], { commitment: "confirmed" });
+}
+
+export interface WithdrawProgress {
+  step: string;
+  signature?: string;
+}
+
+/** Create the signature buffer and upload a 1652-byte signature in chunks. */
+export async function uploadSignature(
+  conn: Connection,
+  feePayer: Keypair,
+  genesis: Uint8Array,
+  sig: Uint8Array,
+  onProgress?: (p: WithdrawProgress) => void,
+): Promise<void> {
+  onProgress?.({ step: "Creating signature buffer" });
+  await sendTx(conn, feePayer, [initSigBufferIx(feePayer.publicKey, genesis)]);
+  const CHUNK = 900;
+  for (let offset = 0; offset < sig.length; offset += CHUNK) {
+    const chunk = sig.slice(offset, Math.min(offset + CHUNK, sig.length));
+    onProgress?.({ step: `Uploading signature (${offset}/${sig.length})` });
+    await sendTx(conn, feePayer, [writeSigBufferIx(genesis, offset, chunk)]);
+  }
 }
 
 /** Read the vault's current one-time public key (28 bytes), or null if not opened. */
@@ -112,7 +135,7 @@ export async function openVault(
   wallet: VaultWallet,
   depositLamports: bigint,
 ): Promise<string> {
-  return send(conn, feePayer, [openVaultIx(feePayer.publicKey, wallet.genesis, depositLamports)]);
+  return sendTx(conn, feePayer, [openVaultIx(feePayer.publicKey, wallet.genesis, depositLamports)]);
 }
 
 /** Deposit SOL by a plain transfer to the vault address (no program ix needed). */
@@ -122,14 +145,9 @@ export async function depositSol(
   vault: PublicKey,
   lamports: bigint,
 ): Promise<string> {
-  return send(conn, feePayer, [
+  return sendTx(conn, feePayer, [
     SystemProgram.transfer({ fromPubkey: feePayer.publicKey, toPubkey: vault, lamports }),
   ]);
-}
-
-export interface WithdrawProgress {
-  step: string;
-  signature?: string;
 }
 
 /** Full SOL withdrawal: sign, upload signature to a buffer, spend, rotate. */
@@ -150,19 +168,10 @@ export async function withdrawSol(
   const sig = wallet.signAt(k, message);
   if (sig.length !== SIGNATURE_BYTES) throw new Error("bad signature length");
 
-  onProgress?.({ step: "Creating signature buffer" });
-  let s = await send(conn, feePayer, [initSigBufferIx(feePayer.publicKey, wallet.genesis)]);
-  onProgress?.({ step: "Signature buffer created", signature: s });
-
-  const CHUNK = 900;
-  for (let offset = 0; offset < sig.length; offset += CHUNK) {
-    const chunk = sig.slice(offset, Math.min(offset + CHUNK, sig.length));
-    onProgress?.({ step: `Uploading signature (${offset}/${sig.length})` });
-    s = await send(conn, feePayer, [writeSigBufferIx(wallet.genesis, offset, chunk)]);
-  }
+  await uploadSignature(conn, feePayer, wallet.genesis, sig, onProgress);
 
   onProgress?.({ step: "Spending + rotating key" });
-  s = await send(conn, feePayer, [
+  const s = await sendTx(conn, feePayer, [
     spendSolIx(wallet.address, wallet.genesis, amount, next, destination, feePayer.publicKey),
   ]);
   onProgress?.({ step: "Done", signature: s });

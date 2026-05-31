@@ -6,6 +6,7 @@ import {
   SystemProgram,
   TransactionInstruction,
 } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 export const PROGRAM_ID = new PublicKey(
   "34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD",
@@ -118,6 +119,31 @@ export function spendSolIx(
       { pubkey: rentRefund, isSigner: false, isWritable: true },
     ],
     data: ixData(3, genesis, u64le(amount), next),
+  });
+}
+
+export function spendTokenIx(
+  vault: PublicKey,
+  genesis: Uint8Array,
+  amount: bigint,
+  next: Uint8Array,
+  mint: PublicKey,
+  vaultToken: PublicKey,
+  destinationToken: PublicKey,
+  rentRefund: PublicKey,
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: PROGRAM_ID,
+    keys: [
+      { pubkey: vault, isSigner: false, isWritable: true },
+      { pubkey: sigbufPda(genesis), isSigner: false, isWritable: true },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: vaultToken, isSigner: false, isWritable: true },
+      { pubkey: destinationToken, isSigner: false, isWritable: true },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: rentRefund, isSigner: false, isWritable: true },
+    ],
+    data: ixData(4, genesis, u64le(amount), next),
   });
 }
 
