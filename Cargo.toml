@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wots", "programs/quantum-vault"]
+members = ["crates/wots", "crates/harness", "programs/quantum-vault"]
 
 [workspace.package]
 edition = "2021"

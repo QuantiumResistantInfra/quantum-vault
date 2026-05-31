@@ -30,7 +30,7 @@ pub mod quantum_vault {
     /// Create a vault bound to `genesis_pubkey` and fund it with `deposit` lamports.
     pub fn open_vault(
         ctx: Context<OpenVault>,
-        genesis_pubkey: [u8; 32],
+        genesis_pubkey: [u8; 28],
         deposit: u64,
     ) -> Result<()> {
         let vault = &mut ctx.accounts.vault;
@@ -60,9 +60,9 @@ pub mod quantum_vault {
     /// signature over the spend, then rotate the vault to `next_pubkey`.
     pub fn spend(
         ctx: Context<Spend>,
-        genesis_pubkey: [u8; 32],
+        genesis_pubkey: [u8; 28],
         amount: u64,
-        next_pubkey: [u8; 32],
+        next_pubkey: [u8; 28],
         signature: Vec<u8>,
     ) -> Result<()> {
         require!(signature.len() == SIG_LEN, VaultError::BadSignatureLength);
@@ -99,10 +99,10 @@ pub mod quantum_vault {
 /// Canonical message bound by a spend signature.
 /// `genesis || amount_le || destination || next_pubkey`.
 fn spend_message(
-    genesis: &[u8; 32],
+    genesis: &[u8; 28],
     amount: u64,
     destination: &Pubkey,
-    next: &[u8; 32],
+    next: &[u8; 28],
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(32 + 8 + 32 + 32);
     data.extend_from_slice(genesis);
@@ -114,18 +114,18 @@ fn spend_message(
 
 #[account]
 pub struct Vault {
-    /// The currently-authorized WOTS public key. Rotates on every spend.
-    pub current_pubkey: [u8; 32],
+    /// The currently-authorized WOTS public key (224-bit). Rotates every spend.
+    pub current_pubkey: [u8; 28],
     pub bump: u8,
 }
 
 impl Vault {
-    /// 8-byte discriminator + 32-byte pubkey + 1-byte bump.
-    const LEN: usize = 8 + 32 + 1;
+    /// 8-byte discriminator + 28-byte pubkey + 1-byte bump.
+    const LEN: usize = 8 + 28 + 1;
 }
 
 #[derive(Accounts)]
-#[instruction(genesis_pubkey: [u8; 32])]
+#[instruction(genesis_pubkey: [u8; 28])]
 pub struct OpenVault<'info> {
     #[account(
         init,
@@ -141,7 +141,7 @@ pub struct OpenVault<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(genesis_pubkey: [u8; 32])]
+#[instruction(genesis_pubkey: [u8; 28])]
 pub struct Spend<'info> {
     #[account(
         mut,

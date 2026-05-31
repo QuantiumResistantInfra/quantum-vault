@@ -13,13 +13,25 @@ needs cheap hashing to verify on-chain.
 | Phase | What | State |
 |-------|------|-------|
 | 1 | `wots` — Winternitz one-time signature core library | ✅ done, tested |
-| 2 | `quantum-vault` — Solana program (PDA vault + key rotation) | ⏳ next |
-| 3 | Client + integration tests on a local validator | ⏳ planned |
+| 2 | `quantum-vault` — Solana program (PDA vault + key rotation) | ✅ done, builds to BPF |
+| 3 | `harness` — end-to-end LiteSVM tests | ✅ done, passing |
+
+**Proven working:** the end-to-end test opens a vault, spends from it with a
+Winternitz signature, and confirms the vault rotates to the next one-time key —
+running the real compiled BPF program. On-chain WOTS verification + transfer
+costs **~530k compute units** (over the 200k default, so a `ComputeBudget`
+instruction is required; well under the 1.4M max).
+
+```bash
+cargo test -p harness -- --nocapture   # see the compute-unit readout
+```
 
 ## Phase 1: the WOTS core (`crates/wots`)
 
-Pure-Rust Winternitz One-Time Signatures over Keccak-256, sized to fit a Solana
-transaction (1088-byte signature, 32-byte public key).
+Pure-Rust Winternitz One-Time Signatures over Keccak-256 truncated to 224 bits,
+sized to fit a Solana transaction (840-byte signature, 28-byte public key).
+The 224-bit choice is deliberate: a 256-bit scheme's 1088-byte signature would
+overflow Solana's 1232-byte transaction limit once wrapped in an instruction.
 
 ```bash
 cargo test -p wots                 # run the test suite

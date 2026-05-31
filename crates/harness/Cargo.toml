@@ -1,0 +1,19 @@
+[package]
+name = "harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# End-to-end tests only; no library code of its own.
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+# The program, as a host lib (no entrypoint) for its instruction/account types.
+quantum-vault = { path = "../../programs/quantum-vault", default-features = false, features = ["no-entrypoint"] }
+# WOTS with the host (sha3) backend for client-side signing. Same Keccak-256 as
+# the on-chain syscall backend, so signatures verify identically.
+wots = { path = "../wots" }
+anchor-lang = "0.31.1"
+litesvm = "0.6"
+solana-sdk = "2.2"

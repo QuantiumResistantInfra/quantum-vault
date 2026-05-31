@@ -35,36 +35,50 @@
 
 #![forbid(unsafe_code)]
 
-/// Keccak-256 output length in bytes (the security parameter, n).
-pub const HASH_LEN: usize = 32;
-/// Base-256 digits taken from the 32-byte message digest (one per byte).
-pub const MSG_DIGITS: usize = 32;
-/// Checksum digits. Max checksum = 32 * 255 = 8160 < 2^16, so 2 bytes suffice.
+/// Hash length in bytes (n) — Keccak-256 **truncated to 224 bits**.
+///
+/// Why 224 and not 256: a 256-bit scheme produces a 1088-byte signature which,
+/// once wrapped in a transaction, blows past Solana's 1232-byte limit. Truncating
+/// to 224 bits yields an 840-byte signature that fits a single transaction — the
+/// same choice the real Solana Winternitz vault makes. Security: 224-bit preimage
+/// resistance → ~112-bit post-quantum (Grover only square-roots it), still ample.
+pub const HASH_LEN: usize = 28;
+/// Base-256 digits taken from the 28-byte message digest (one per byte).
+pub const MSG_DIGITS: usize = 28;
+/// Checksum digits. Max checksum = 28 * 255 = 7140 < 2^16, so 2 bytes suffice.
 pub const CHECKSUM_DIGITS: usize = 2;
 /// Total hash chains = message digits + checksum digits.
-pub const NUM_CHAINS: usize = MSG_DIGITS + CHECKSUM_DIGITS; // 34
+pub const NUM_CHAINS: usize = MSG_DIGITS + CHECKSUM_DIGITS; // 30
 /// Maximum iterations per chain (a base-256 digit is 0..=255).
 pub const CHAIN_MAX: usize = 255;
-/// Wire size of a signature in bytes (34 * 32 = 1088). Fits Solana's 1232-byte
-/// transaction limit with room for the rest of the instruction.
+/// Wire size of a signature in bytes (30 * 28 = 840). Fits Solana's 1232-byte
+/// transaction limit once instruction + account overhead is added.
 pub const SIGNATURE_BYTES: usize = NUM_CHAINS * HASH_LEN;
 
 /// A 32-byte Keccak-256 hash value.
 pub type Hash = [u8; HASH_LEN];
 
-/// Keccak-256 of `data` (off-chain / test backend: pure-Rust `sha3`).
+/// Keccak-256 of `data`, truncated to [`HASH_LEN`] bytes
+/// (off-chain / test backend: pure-Rust `sha3`).
 #[cfg(feature = "sha3-backend")]
 pub fn keccak(data: &[u8]) -> Hash {
     use sha3::{Digest, Keccak256};
     let mut h = Keccak256::new();
     h.update(data);
-    h.finalize().into()
+    let full = h.finalize();
+    let mut out = [0u8; HASH_LEN];
+    out.copy_from_slice(&full[..HASH_LEN]);
+    out
 }
 
-/// Keccak-256 of `data` (on-chain backend: Solana's `keccak` syscall, cheap CU).
+/// Keccak-256 of `data`, truncated to [`HASH_LEN`] bytes
+/// (on-chain backend: Solana's `keccak` syscall, cheap CU).
 #[cfg(all(feature = "solana-backend", not(feature = "sha3-backend")))]
 pub fn keccak(data: &[u8]) -> Hash {
-    solana_program::keccak::hash(data).to_bytes()
+    let full = solana_program::keccak::hash(data).to_bytes();
+    let mut out = [0u8; HASH_LEN];
+    out.copy_from_slice(&full[..HASH_LEN]);
+    out
 }
 
 /// Apply Keccak-256 to `input` `iterations` times (walk a hash chain forward).
@@ -262,8 +276,9 @@ mod tests {
 
     #[test]
     fn signature_fits_solana_transaction() {
-        // Solana's max transaction size is 1232 bytes; our signature is 1088.
-        assert_eq!(SIGNATURE_BYTES, 1088);
+        // Solana's max transaction size is 1232 bytes; our 224-bit signature is
+        // 840, leaving ~390 bytes for instruction + account + signature overhead.
+        assert_eq!(SIGNATURE_BYTES, 840);
         assert!(SIGNATURE_BYTES < 1232);
     }
 }
