@@ -19,14 +19,14 @@ under the same quantum-resistant key.
 |-----------|------|-------|
 | `wots` | Winternitz one-time signature core library | ✅ done, tested |
 | `quantum-vault` | Native Solana program (PDA vault, SOL + SPL, key rotation) | ✅ done, builds to BPF |
-| `harness` | end-to-end LiteSVM tests (SOL + token + forgery) | ✅ done, passing |
-| `app` | TypeScript SDK + React web UI (devnet) | ✅ done, verified live |
+| `harness` | end-to-end LiteSVM tests (SOL + token + forgery + buffer scope) | ✅ done, passing |
+| `app` | TypeScript SDK + React web UI (devnet; mainnet-ready) | ✅ done, verified live |
 
 **Proven working:** the end-to-end tests open a vault, spend SOL *and* SPL tokens
 from it with Winternitz signatures, and confirm the vault rotates to the next
-one-time key — running the real compiled BPF program. A spend costs **~72–75k
-compute units**, comfortably under the 200k default (no `ComputeBudget`
-instruction needed).
+one-time key — running the real compiled BPF program. A spend costs **~89–94k
+compute units**, still under the 200k default (no `ComputeBudget` instruction
+needed).
 
 ```bash
 cargo build-sbf --manifest-path programs/quantum-vault/Cargo.toml   # build BPF
@@ -39,9 +39,15 @@ Pure-Rust Winternitz One-Time Signatures over Keccak-256 truncated to 224 bits,
 with Winternitz parameter `W=16`. `W` is the performance knob: on-chain
 verification walks each chain up to `W-1` times, so a small `W` means far fewer
 Keccak hashes — the dominant on-chain cost. Dropping from base-256 to `W=16` cut
-a spend from ~565k to ~72k compute units (~8×). The trade-off is a larger
-1652-byte signature that no longer fits one transaction (see the buffer flow
-below).
+a spend ~6× (to ~90k compute units). The trade-off is a larger 1652-byte
+signature that no longer fits one transaction (see the buffer flow below).
+
+Every chain hash is **tweaked** by a per-vault public seed plus the chain index
+and position — `keccak(pub_seed ‖ chain ‖ position ‖ x)`, in the spirit of
+WOTS+. This makes each (vault, chain, position) a distinct one-way function, so
+chain values can't be attacked in aggregate across vaults and the security
+margin doesn't erode as the system is used. `pub_seed` is a public value derived
+from the master seed and stored on-chain in the vault.
 
 ```bash
 cargo test -p wots                 # run the test suite
@@ -53,6 +59,8 @@ cargo run -p wots --example demo   # see the full lifecycle
 - **Quantum-resistant:** security rests only on hash preimage resistance. Grover
   (the best quantum attack) merely square-roots it, so 224-bit Keccak keeps
   ~112-bit post-quantum security.
+- **Tweaked hashing (WOTS+ style):** a per-vault public seed domain-separates
+  every hash, so the margin holds no matter how much the system is used.
 - **One-time use:** a keypair may sign exactly one message. Signing twice leaks
   the key. The vault handles this by committing the *next* public key on every
   spend and rotating to it (the "vault pattern").
@@ -86,9 +94,9 @@ account is an ordinary transfer.
 
 ### Instructions
 
-- `OpenVault { genesis_pubkey, deposit }` — create + fund a vault
-- `InitSigBuffer { genesis_pubkey }` — open a signature buffer
-- `WriteSigBuffer { offset, chunk }` — upload signature bytes
+- `OpenVault { genesis_pubkey, pub_seed, deposit }` — create + fund a vault
+- `InitSigBuffer { genesis_pubkey }` — open a relayer-scoped signature buffer
+- `WriteSigBuffer { offset, chunk }` — upload signature bytes (relayer-signed)
 - `SpendSol { genesis_pubkey, amount, next_pubkey }` — withdraw SOL, rotate
 - `SpendToken { genesis_pubkey, amount, next_pubkey }` — withdraw SPL tokens, rotate
 
@@ -109,11 +117,12 @@ cargo run -p harness --example devnet_smoke
 
 ## Web app (`app/`)
 
-A React UI + TypeScript SDK for using a vault from the browser on devnet. The SDK
-ports WOTS **signing** to TypeScript (byte-for-byte compatible with the on-chain
-Rust verifier) and builds the full open → buffer → spend → rotate flow for both
-**SOL and SPL tokens**. A burner keypair relays the (multi-tx) flow popup-free;
-**Phantom** can be connected to fund the burner in one approval. The vault's
+A React UI + TypeScript SDK for using a vault from the browser (devnet today,
+mainnet-ready — see *Switching networks*). The SDK ports WOTS **signing** to
+TypeScript (byte-for-byte compatible with the on-chain Rust verifier) and builds
+the full open → buffer → spend → rotate flow for both **SOL and SPL tokens**. A
+burner keypair relays the (multi-tx) flow popup-free; **Phantom** can be
+connected to fund the burner in one approval. The vault's
 authority is a 24-word recovery phrase (a chain of one-time keys derived from it),
 shown blurred behind a click-to-reveal. Verified end-to-end against the live
 devnet program — SOL and token signatures generated in the browser verify
@@ -146,6 +155,9 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 ## Roadmap
 
 - ✅ SPL-token vaults
-- ✅ Native program + `W=16` tuning (8× lower compute) with signature buffer
+- ✅ Native program + `W=16` tuning (~6× lower compute) with signature buffer
 - ✅ Devnet deployment + live smoke test
 - ✅ TypeScript SDK + React web UI (WOTS signing in TS), verified on devnet
+- ✅ WOTS+ tweaked hashing (per-vault public seed)
+- ✅ Mainnet cutover staged (single network constant)
+- Mainnet launch
