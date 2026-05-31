@@ -140,4 +140,3 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 - ✅ Native program + `W=16` tuning (8× lower compute) with signature buffer
 - ✅ Devnet deployment + live smoke test
 - ✅ TypeScript SDK + React web UI (WOTS signing in TS), verified on devnet
-- Security audit → mainnet

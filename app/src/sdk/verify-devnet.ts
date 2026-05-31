@@ -23,7 +23,7 @@ async function main() {
 
   const wallet = VaultWallet.random();
   console.log("vault:    ", wallet.address.toBase58());
-  console.log("phrase:   ", wallet.mnemonic);
+  // NOTE: never log wallet.mnemonic — it is the vault's authority.
 
   console.log("\nopening vault (+0.02 SOL)...");
   await openVault(conn, feePayer, wallet, BigInt(LAMPORTS_PER_SOL / 50));
