@@ -2,6 +2,12 @@
   <img src="brand/qubit-banner.png" alt="Qubit — post-quantum secure vaults for Solana" width="100%" />
 </p>
 
+<p align="center">
+  <a href="https://qubitvault.vercel.app"><b>Live App</b></a> ·
+  <a href="https://x.com/QuantumResi"><b>X / @QuantumResi</b></a> ·
+  <a href="https://explorer.solana.com/address/34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD"><b>Mainnet program</b></a>
+</p>
+
 # Qubit
 
 Post-quantum secure vaults for Solana.

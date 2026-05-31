@@ -55,12 +55,17 @@ header h1 {
   font-family: ui-monospace, monospace;
 }
 
+.social {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
 .ghbox {
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 360px;
-  margin-top: 16px;
+  flex: 1 1 240px;
   padding: 12px 14px;
   background: var(--card);
   border: 1px solid var(--line);
@@ -68,6 +73,10 @@ header h1 {
   text-decoration: none;
   color: var(--fg);
   transition: 0.15s;
+}
+.xicon {
+  width: 22px;
+  height: 22px;
 }
 .ghbox:hover {
   border-color: var(--accent);
