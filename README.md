@@ -1,11 +1,14 @@
-# quantum-vault
+# Qubit
 
 Post-quantum secure vaults for Solana.
+
+*The Rust workspace and on-chain program are named `quantum-vault` — that's
+Qubit's codebase under the hood.*
 
 > **Live on devnet:** [`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD`](https://explorer.solana.com/address/34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD?cluster=devnet)
 
 Solana accounts are secured by Ed25519 — an elliptic-curve scheme that a
-sufficiently capable quantum computer breaks with Shor's algorithm. quantum-vault
+sufficiently capable quantum computer breaks with Shor's algorithm. Qubit
 authorizes every withdrawal with a **hash-based Winternitz one-time signature**
 instead: there is no elliptic curve for Shor to attack, and verification is cheap
 enough to run on-chain with Keccak hashing.

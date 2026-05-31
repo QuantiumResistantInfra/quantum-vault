@@ -288,7 +288,7 @@ export function App() {
     <div className="wrap">
       <header>
         <h1>
-          quantum-vault <span className="badge">{NETWORK === "mainnet-beta" ? "mainnet" : NETWORK}</span>
+          Qubit <span className="badge">{NETWORK === "mainnet-beta" ? "mainnet" : NETWORK}</span>
         </h1>
         <p className="sub">
           Post-quantum Solana vault — withdrawals authorized by a hash-based Winternitz one-time
