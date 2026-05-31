@@ -35,8 +35,6 @@
 
 #![forbid(unsafe_code)]
 
-use sha3::{Digest, Keccak256};
-
 /// Keccak-256 output length in bytes (the security parameter, n).
 pub const HASH_LEN: usize = 32;
 /// Base-256 digits taken from the 32-byte message digest (one per byte).
@@ -54,11 +52,19 @@ pub const SIGNATURE_BYTES: usize = NUM_CHAINS * HASH_LEN;
 /// A 32-byte Keccak-256 hash value.
 pub type Hash = [u8; HASH_LEN];
 
-/// Keccak-256 of `data`.
+/// Keccak-256 of `data` (off-chain / test backend: pure-Rust `sha3`).
+#[cfg(feature = "sha3-backend")]
 pub fn keccak(data: &[u8]) -> Hash {
+    use sha3::{Digest, Keccak256};
     let mut h = Keccak256::new();
     h.update(data);
     h.finalize().into()
+}
+
+/// Keccak-256 of `data` (on-chain backend: Solana's `keccak` syscall, cheap CU).
+#[cfg(all(feature = "solana-backend", not(feature = "sha3-backend")))]
+pub fn keccak(data: &[u8]) -> Hash {
+    solana_program::keccak::hash(data).to_bytes()
 }
 
 /// Apply Keccak-256 to `input` `iterations` times (walk a hash chain forward).

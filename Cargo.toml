@@ -1,7 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/wots"]
+members = ["crates/wots", "programs/quantum-vault"]
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
+
+[profile.release]
+overflow-checks = true
+
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1
