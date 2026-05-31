@@ -305,19 +305,28 @@ fn spend_token(
         return Err(VaultError::BadTokenProgram.into());
     }
 
+    if *mint.owner != SPL_TOKEN_ID || mint.data_len() < 82 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+
     let current = read_vault(vault, program_id, &genesis)?;
     let bump = vault.try_borrow_data()?[29];
     let message = spend_token_message(&genesis, mint.key, amount, destination_token.key, &next);
     verify_buffered(buffer, program_id, &genesis, &current, &message)?;
 
-    // SPL Token `Transfer` (tag 3): [source(w), destination(w), authority(s)].
-    let mut data = Vec::with_capacity(9);
-    data.push(3u8);
+    // SPL Token `TransferChecked` (tag 12): [source(w), mint, destination(w),
+    // authority(s)]. Binding the mint + decimals means the transfer can't be
+    // redirected to a different token than the one the signature authorized.
+    let decimals = mint.try_borrow_data()?[44];
+    let mut data = Vec::with_capacity(10);
+    data.push(12u8);
     data.extend_from_slice(&amount.to_le_bytes());
+    data.push(decimals);
     let ix = Instruction {
         program_id: *token_program.key,
         accounts: vec![
             AccountMeta::new(*vault_token.key, false),
+            AccountMeta::new_readonly(*mint.key, false),
             AccountMeta::new(*destination_token.key, false),
             AccountMeta::new_readonly(*vault.key, true),
         ],
@@ -327,6 +336,7 @@ fn spend_token(
         &ix,
         &[
             vault_token.clone(),
+            mint.clone(),
             destination_token.clone(),
             vault.clone(),
             token_program.clone(),
