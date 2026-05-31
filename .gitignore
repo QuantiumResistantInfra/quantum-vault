@@ -5,3 +5,6 @@ Cargo.lock
 test-ledger/
 node_modules/
 .anchor/
+dist/
+app/dist/
+*.tsbuildinfo

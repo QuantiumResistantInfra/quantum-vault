@@ -20,6 +20,7 @@ under the same quantum-resistant key.
 | `wots` | Winternitz one-time signature core library | ✅ done, tested |
 | `quantum-vault` | Native Solana program (PDA vault, SOL + SPL, key rotation) | ✅ done, builds to BPF |
 | `harness` | end-to-end LiteSVM tests (SOL + token + forgery) | ✅ done, passing |
+| `app` | TypeScript SDK + React web UI (devnet) | ✅ done, verified live |
 
 **Proven working:** the end-to-end tests open a vault, spend SOL *and* SPL tokens
 from it with Winternitz signatures, and confirm the vault rotates to the next
@@ -106,6 +107,23 @@ solana program deploy target/deploy/quantum_vault.so \
 cargo run -p harness --example devnet_smoke
 ```
 
+## Web app (`app/`)
+
+A React UI + TypeScript SDK for using a vault from the browser on devnet. The SDK
+ports WOTS **signing** to TypeScript (byte-for-byte compatible with the on-chain
+Rust verifier) and builds the full open → buffer → spend → rotate flow. A burner
+keypair pays fees; the vault's authority is a 24-word recovery phrase (a chain of
+one-time keys derived from it). Verified end-to-end against the live devnet
+program — a signature generated in the browser verifies on-chain, funds move, and
+the one-time key rotates.
+
+```bash
+cd app
+npm install
+npm run verify-devnet   # prove the TS SDK against the live program (Node)
+npm run dev             # launch the web UI
+```
+
 ## Background
 
 Hash-based WOTS is the only post-quantum signature family that runs cheaply on
@@ -118,5 +136,5 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 - ✅ SPL-token vaults
 - ✅ Native program + `W=16` tuning (8× lower compute) with signature buffer
 - ✅ Devnet deployment + live smoke test
-- TypeScript client (port WOTS signing to TS)
+- ✅ TypeScript SDK + React web UI (WOTS signing in TS), verified on devnet
 - Security audit → mainnet

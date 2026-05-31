@@ -1,0 +1,225 @@
+:root {
+  --bg: #0a0e14;
+  --card: #131820;
+  --line: #232b36;
+  --fg: #e6edf3;
+  --muted: #8b97a7;
+  --accent: #7c5cff;
+  --accent2: #00d99a;
+  --warn: #ffb020;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 50% -200px, #1a1438 0%, var(--bg) 60%);
+  color: var(--fg);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+.wrap {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 40px 20px 80px;
+}
+header h1 {
+  margin: 0 0 6px;
+  font-size: 30px;
+  letter-spacing: -0.02em;
+}
+.badge {
+  font-size: 12px;
+  vertical-align: middle;
+  background: var(--accent);
+  color: #fff;
+  padding: 3px 8px;
+  border-radius: 999px;
+  margin-left: 6px;
+}
+.sub {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+.prog {
+  color: var(--accent2);
+  text-decoration: none;
+  font-size: 13px;
+  font-family: ui-monospace, monospace;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+  margin-top: 18px;
+}
+.card h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 4px 0 12px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #0d1219;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+.row code {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  color: #cdd6e0;
+}
+.bal {
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--accent2);
+}
+
+button {
+  background: #1b2330;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+button.link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+button.link:hover {
+  color: var(--fg);
+}
+
+input {
+  background: #0d1219;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 12px;
+  color: var(--fg);
+  font-size: 14px;
+  width: 100%;
+}
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.import {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.import button {
+  white-space: nowrap;
+}
+
+.vhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.phrase {
+  background: #2a210a;
+  border: 1px solid #4a3a12;
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.phrase b {
+  color: var(--warn);
+  display: block;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.phrase-box {
+  position: relative;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+.phrase code.mnemonic {
+  display: block;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  word-spacing: 3px;
+  color: #ffe9b8;
+  transition: filter 0.15s;
+}
+.phrase code.mnemonic.blurred {
+  filter: blur(7px);
+  user-select: none;
+}
+.reveal-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--warn);
+  letter-spacing: 0.02em;
+}
+.phrase-actions {
+  display: flex;
+  gap: 4px;
+}
+.action {
+  margin-top: 14px;
+}
+.action label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.dest {
+  margin-bottom: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.log {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.log div {
+  color: #aeb9c7;
+  border-bottom: 1px solid #1a212c;
+  padding-bottom: 4px;
+}
