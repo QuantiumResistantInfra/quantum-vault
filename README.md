@@ -2,6 +2,8 @@
 
 Post-quantum secure vaults for Solana.
 
+> **Live on devnet:** [`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD`](https://explorer.solana.com/address/34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD?cluster=devnet)
+
 Solana accounts are secured by Ed25519 — an elliptic-curve scheme that a
 sufficiently capable quantum computer breaks with Shor's algorithm. quantum-vault
 authorizes every withdrawal with a **hash-based Winternitz one-time signature**
@@ -89,6 +91,21 @@ account is an ordinary transfer.
 - `SpendSol { genesis_pubkey, amount, next_pubkey }` — withdraw SOL, rotate
 - `SpendToken { genesis_pubkey, amount, next_pubkey }` — withdraw SPL tokens, rotate
 
+## Deployment
+
+Deployed and verified on **devnet** at
+`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD`.
+
+```bash
+# build + deploy
+cargo build-sbf --manifest-path programs/quantum-vault/Cargo.toml
+solana program deploy target/deploy/quantum_vault.so \
+  --program-id <program-keypair.json> --url devnet
+
+# live smoke test: open a vault, buffer a signature, spend, verify rotation
+cargo run -p harness --example devnet_smoke
+```
+
 ## Background
 
 Hash-based WOTS is the only post-quantum signature family that runs cheaply on
@@ -100,5 +117,6 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 
 - ✅ SPL-token vaults
 - ✅ Native program + `W=16` tuning (8× lower compute) with signature buffer
-- TypeScript client + devnet deployment
-- Security audit
+- ✅ Devnet deployment + live smoke test
+- TypeScript client (port WOTS signing to TS)
+- Security audit → mainnet

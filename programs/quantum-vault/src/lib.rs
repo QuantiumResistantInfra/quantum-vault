@@ -38,7 +38,7 @@ use solana_program::{
     sysvar::Sysvar,
 };
 
-declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+declare_id!("34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD");
 
 /// The SPL Token program.
 const SPL_TOKEN_ID: Pubkey =
