@@ -8,6 +8,7 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { RPC_URL, NETWORK, IS_DEVNET, PROGRAM_ID, explorerUrl } from "./sdk/program";
+import { QubitMark } from "./Logo";
 import { VaultWallet, openVault, depositSol, withdrawSol, readCurrentPubkey } from "./sdk/vault";
 import {
   createTestMint,
@@ -288,6 +289,7 @@ export function App() {
     <div className="wrap">
       <header>
         <h1>
+          <QubitMark className="logo" />
           Qubit <span className="badge">{NETWORK === "mainnet-beta" ? "mainnet" : NETWORK}</span>
         </h1>
         <p className="sub">
