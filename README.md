@@ -9,7 +9,8 @@ Post-quantum secure vaults for Solana.
 *The Rust workspace and on-chain program are named `quantum-vault` — that's
 Qubit's codebase under the hood.*
 
-> **Live on devnet:** [`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD`](https://explorer.solana.com/address/34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD?cluster=devnet)
+> ### 🚀 Live on Solana **mainnet** — **[qubitvault.vercel.app](https://qubitvault.vercel.app)**
+> Program: [`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD`](https://explorer.solana.com/address/34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD) · also deployed on devnet at the same address.
 
 Solana accounts are secured by Ed25519 — an elliptic-curve scheme that a
 sufficiently capable quantum computer breaks with Shor's algorithm. Qubit
@@ -109,23 +110,24 @@ account is an ordinary transfer.
 
 ## Deployment
 
-Deployed and verified on **devnet** at
-`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD`.
+Live on Solana **mainnet** (and devnet) at
+`34CJhzSBAptiSadvHZK4A1PhpcfdsbguyRXqnUQPpCiD` — the program id is the same on
+every cluster (same program keypair). Web app: **[qubitvault.vercel.app](https://qubitvault.vercel.app)**.
 
 ```bash
 # build + deploy
 cargo build-sbf --manifest-path programs/quantum-vault/Cargo.toml
 solana program deploy target/deploy/quantum_vault.so \
-  --program-id <program-keypair.json> --url devnet
+  --program-id <program-keypair.json> --url mainnet-beta   # or devnet
 
-# live smoke test: open a vault, buffer a signature, spend, verify rotation
+# live smoke test (devnet): open a vault, buffer a signature, spend, verify rotation
 cargo run -p harness --example devnet_smoke
 ```
 
 ## Web app (`app/`)
 
-A React UI + TypeScript SDK for using a vault from the browser (devnet today,
-mainnet-ready — see *Switching networks*). The SDK ports WOTS **signing** to
+A React UI + TypeScript SDK for using a vault from the browser — **live on
+mainnet at [qubitvault.vercel.app](https://qubitvault.vercel.app)**. The SDK ports WOTS **signing** to
 TypeScript (byte-for-byte compatible with the on-chain Rust verifier) and builds
 the full open → buffer → spend → rotate flow for both **SOL and SPL tokens**. A
 burner keypair relays the (multi-tx) flow popup-free; **Phantom** can be
@@ -145,12 +147,15 @@ npm run dev                      # launch the web UI
 
 ### Switching networks
 
-The app is network-driven by one constant, `NETWORK`, in
-[`app/src/sdk/program.ts`](app/src/sdk/program.ts). Set it to `"mainnet-beta"`
-and the RPC, the airdrop/test-token buttons, and the explorer links all follow.
-For mainnet, set `VITE_RPC_URL` (see `app/.env.example`) to a paid RPC — the
-public mainnet endpoint is rate-limited. The program id is the same on every
-cluster, so it doesn't change.
+The cluster is **env-driven** — set these in the host's environment (e.g. Vercel
+project settings; defaults to devnet):
+
+- `VITE_NETWORK` = `mainnet-beta` (or `devnet`)
+- `VITE_RPC_URL` = a paid RPC endpoint (the public mainnet RPC is rate-limited)
+
+The RPC, the airdrop/test-token buttons, and explorer links all follow. The
+program id is the same on every cluster, so it doesn't change. See
+`app/.env.example`.
 
 ## Background
 
@@ -166,5 +171,4 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 - ✅ Devnet deployment + live smoke test
 - ✅ TypeScript SDK + React web UI (WOTS signing in TS), verified on devnet
 - ✅ WOTS+ tweaked hashing (per-vault public seed)
-- ✅ Mainnet cutover staged (single network constant)
-- Mainnet launch
+- ✅ **Mainnet launch — program live + web at [qubitvault.vercel.app](https://qubitvault.vercel.app)**
