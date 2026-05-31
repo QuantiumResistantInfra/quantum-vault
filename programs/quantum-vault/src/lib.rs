@@ -47,8 +47,9 @@ const SPL_TOKEN_ID: Pubkey =
 const VAULT_TAG: u8 = 1;
 const SIGBUF_TAG: u8 = 2;
 
-/// Vault account: `[tag(1)][current_pubkey(28)][bump(1)]`.
-const VAULT_LEN: usize = 1 + 28 + 1;
+/// Vault account: `[tag(1)][current_pubkey(28)][bump(1)][pub_seed(28)]`.
+/// `pub_seed` is the vault's WOTS+ tweak — fixed for the vault's whole life.
+const VAULT_LEN: usize = 1 + 28 + 1 + 28;
 /// Signature buffer account: `[tag(1)][bump(1)][payer(32)][signature(1652)]`.
 /// The buffer is bound to the relayer that created it, and only that relayer can
 /// write to it — so no one can corrupt a victim's in-flight signature.
@@ -84,9 +85,13 @@ impl From<VaultError> for ProgramError {
 /// Instruction set. Borsh-serialized; the leading byte is the variant index.
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub enum VaultInstruction {
-    /// Create a vault bound to `genesis_pubkey` and fund it with `deposit`.
-    /// Accounts: `[vault(w), funder(w,s), system_program]`.
-    OpenVault { genesis_pubkey: [u8; 28], deposit: u64 },
+    /// Create a vault bound to `genesis_pubkey` (with WOTS+ tweak `pub_seed`) and
+    /// fund it with `deposit`. Accounts: `[vault(w), funder(w,s), system_program]`.
+    OpenVault {
+        genesis_pubkey: [u8; 28],
+        pub_seed: [u8; 28],
+        deposit: u64,
+    },
     /// Create the relayer-scoped signature buffer PDA `["sigbuf", genesis, payer]`.
     /// Accounts: `[sig_buffer(w), payer(w,s), system_program]`.
     InitSigBuffer { genesis_pubkey: [u8; 28] },
@@ -121,8 +126,8 @@ pub fn process_instruction(
     match VaultInstruction::try_from_slice(data)
         .map_err(|_| ProgramError::InvalidInstructionData)?
     {
-        VaultInstruction::OpenVault { genesis_pubkey, deposit } => {
-            open_vault(program_id, accounts, genesis_pubkey, deposit)
+        VaultInstruction::OpenVault { genesis_pubkey, pub_seed, deposit } => {
+            open_vault(program_id, accounts, genesis_pubkey, pub_seed, deposit)
         }
         VaultInstruction::InitSigBuffer { genesis_pubkey } => {
             init_sig_buffer(program_id, accounts, genesis_pubkey)
@@ -143,6 +148,7 @@ fn open_vault(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
     genesis: [u8; 28],
+    pub_seed: [u8; 28],
     deposit: u64,
 ) -> ProgramResult {
     let iter = &mut accounts.iter();
@@ -175,6 +181,7 @@ fn open_vault(
     d[0] = VAULT_TAG;
     d[1..29].copy_from_slice(&genesis); // current_pubkey starts at genesis
     d[29] = bump;
+    d[30..58].copy_from_slice(&pub_seed);
     Ok(())
 }
 
@@ -268,9 +275,9 @@ fn spend_sol(
     let destination = next_account_info(iter)?;
     let rent_refund = next_account_info(iter)?;
 
-    let current = read_vault(vault, program_id, &genesis)?;
+    let (current, pub_seed) = read_vault(vault, program_id, &genesis)?;
     let message = spend_sol_message(&genesis, amount, destination.key, &next);
-    verify_buffered(buffer, program_id, &genesis, &current, &message)?;
+    verify_buffered(buffer, program_id, &genesis, &current, &pub_seed, &message)?;
 
     let min = Rent::get()?.minimum_balance(vault.data_len());
     let available = vault.lamports().saturating_sub(min);
@@ -309,10 +316,10 @@ fn spend_token(
         return Err(ProgramError::InvalidAccountData);
     }
 
-    let current = read_vault(vault, program_id, &genesis)?;
+    let (current, pub_seed) = read_vault(vault, program_id, &genesis)?;
     let bump = vault.try_borrow_data()?[29];
     let message = spend_token_message(&genesis, mint.key, amount, destination_token.key, &next);
-    verify_buffered(buffer, program_id, &genesis, &current, &message)?;
+    verify_buffered(buffer, program_id, &genesis, &current, &pub_seed, &message)?;
 
     // SPL Token `TransferChecked` (tag 12): [source(w), mint, destination(w),
     // authority(s)]. Binding the mint + decimals means the transfer can't be
@@ -350,11 +357,12 @@ fn spend_token(
 
 // --- helpers ---------------------------------------------------------------
 
+/// Returns `(current_pubkey, pub_seed)`.
 fn read_vault(
     vault: &AccountInfo,
     program_id: &Pubkey,
     genesis: &[u8; 28],
-) -> Result<[u8; 28], ProgramError> {
+) -> Result<([u8; 28], [u8; 28]), ProgramError> {
     if vault.owner != program_id {
         return Err(ProgramError::IllegalOwner);
     }
@@ -370,7 +378,9 @@ fn read_vault(
     }
     let mut current = [0u8; 28];
     current.copy_from_slice(&d[1..29]);
-    Ok(current)
+    let mut pub_seed = [0u8; 28];
+    pub_seed.copy_from_slice(&d[30..58]);
+    Ok((current, pub_seed))
 }
 
 /// Verify the WOTS signature stored in `buffer` against `current`/`message`,
@@ -381,6 +391,7 @@ fn verify_buffered(
     program_id: &Pubkey,
     genesis: &[u8; 28],
     current: &[u8; 28],
+    pub_seed: &[u8; 28],
     message: &[u8],
 ) -> ProgramResult {
     if buffer.owner != program_id {
@@ -400,7 +411,11 @@ fn verify_buffered(
         return Err(ProgramError::InvalidSeeds);
     }
     let pk = wots::PublicKey(*current);
-    if pk.verify_slice(message, &d[SIGBUF_SIG_OFFSET..SIGBUF_SIG_OFFSET + wots::SIGNATURE_BYTES]) {
+    if pk.verify_slice(
+        message,
+        &d[SIGBUF_SIG_OFFSET..SIGBUF_SIG_OFFSET + wots::SIGNATURE_BYTES],
+        pub_seed,
+    ) {
         Ok(())
     } else {
         Err(VaultError::InvalidSignature.into())

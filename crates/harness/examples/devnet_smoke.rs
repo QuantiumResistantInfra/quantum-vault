@@ -36,8 +36,9 @@ fn main() {
     let mut seed0 = [0u8; 32];
     seed0[..8].copy_from_slice(&nonce.to_le_bytes());
     let sk0 = SecretKey::from_seed(&seed0);
-    let genesis: [u8; 28] = sk0.public_key().0;
-    let next: [u8; 28] = SecretKey::from_seed(&[seed0[0] ^ 0xFF; 32]).public_key().0;
+    let ps = wots::public_seed(&seed0);
+    let genesis: [u8; 28] = sk0.public_key(&ps).0;
+    let next: [u8; 28] = SecretKey::from_seed(&[seed0[0] ^ 0xFF; 32]).public_key(&ps).0;
 
     let vault = Pubkey::find_program_address(&[b"vault", &genesis], &program_id).0;
     let sigbuf =
@@ -55,12 +56,12 @@ fn main() {
             AccountMeta::new(payer.pubkey(), true),
             AccountMeta::new_readonly(system_program::ID, false),
         ],
-        &VaultInstruction::OpenVault { genesis_pubkey: genesis, deposit },
+        &VaultInstruction::OpenVault { genesis_pubkey: genesis, pub_seed: ps, deposit },
     )], "open_vault");
 
     // 2. sign the spend and upload it to the buffer
     let message = spend_sol_message(&genesis, amount, &destination, &next);
-    let sig = sk0.sign(&message).to_bytes();
+    let sig = sk0.sign(&message, &ps).to_bytes();
 
     send(&client, &payer, &[ix(
         program_id,

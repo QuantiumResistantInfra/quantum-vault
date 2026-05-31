@@ -19,10 +19,30 @@ export function keccak(data: Uint8Array): Uint8Array {
   return keccak_256(data).slice(0, HASH_LEN);
 }
 
-/** Apply Keccak `iterations` times (walk a hash chain forward). */
-function chain(input: Uint8Array, iterations: number): Uint8Array {
-  let out = input;
-  for (let i = 0; i < iterations; i++) out = keccak(out);
+/** Per-vault public seed: keccak(master || "QV-PUBSEED"). Tweaks every hash so
+ *  no two vaults share a hash function (WOTS+ multi-target defense). */
+export function publicSeed(master: Uint8Array): Uint8Array {
+  if (master.length !== 32) throw new Error("master must be 32 bytes");
+  const buf = new Uint8Array(32 + 10);
+  buf.set(master, 0);
+  buf.set(new TextEncoder().encode("QV-PUBSEED"), 32);
+  return keccak(buf);
+}
+
+/** One tweaked hash step on chain `i` at position `p`: keccak(pubSeed || i || p || x). */
+function hashStep(pubSeed: Uint8Array, i: number, p: number, x: Uint8Array): Uint8Array {
+  const buf = new Uint8Array(HASH_LEN + 2 + HASH_LEN);
+  buf.set(pubSeed, 0);
+  buf[HASH_LEN] = i;
+  buf[HASH_LEN + 1] = p;
+  buf.set(x, HASH_LEN + 2);
+  return keccak(buf);
+}
+
+/** Walk chain `i` `count` steps starting at position `startPos`. */
+function chain(pubSeed: Uint8Array, i: number, startPos: number, count: number, x: Uint8Array): Uint8Array {
+  let out = x;
+  for (let step = 0; step < count; step++) out = hashStep(pubSeed, i, startPos + step, out);
   return out;
 }
 
@@ -39,11 +59,11 @@ export function secretKeyFromSeed(seed: Uint8Array): Uint8Array[] {
   return chains;
 }
 
-/** Compressed 28-byte public key: keccak of all chain tops. */
-export function publicKey(sk: Uint8Array[]): Uint8Array {
+/** Compressed 28-byte public key: keccak of all chain tops, under `pubSeed`. */
+export function publicKey(sk: Uint8Array[], pubSeed: Uint8Array): Uint8Array {
   const tops = new Uint8Array(SIGNATURE_BYTES);
   for (let i = 0; i < NUM_CHAINS; i++) {
-    tops.set(chain(sk[i], CHAIN_MAX), i * HASH_LEN);
+    tops.set(chain(pubSeed, i, 0, CHAIN_MAX, sk[i]), i * HASH_LEN);
   }
   return keccak(tops);
 }
@@ -63,24 +83,29 @@ function digits(messageDigest: Uint8Array): Uint8Array {
   return out;
 }
 
-/** Sign `message` (one-time!). Returns the 1652-byte signature. */
-export function sign(sk: Uint8Array[], message: Uint8Array): Uint8Array {
+/** Sign `message` under `pubSeed` (one-time!). Returns the 1652-byte signature. */
+export function sign(sk: Uint8Array[], message: Uint8Array, pubSeed: Uint8Array): Uint8Array {
   const d = digits(keccak(message));
   const sig = new Uint8Array(SIGNATURE_BYTES);
   for (let i = 0; i < NUM_CHAINS; i++) {
-    sig.set(chain(sk[i], d[i]), i * HASH_LEN);
+    sig.set(chain(pubSeed, i, 0, d[i], sk[i]), i * HASH_LEN);
   }
   return sig;
 }
 
 /** Verify locally (mirror of the on-chain check) — handy for tests. */
-export function verify(pubkey: Uint8Array, message: Uint8Array, sig: Uint8Array): boolean {
+export function verify(
+  pubkey: Uint8Array,
+  message: Uint8Array,
+  sig: Uint8Array,
+  pubSeed: Uint8Array,
+): boolean {
   if (sig.length !== SIGNATURE_BYTES) return false;
   const d = digits(keccak(message));
   const tops = new Uint8Array(SIGNATURE_BYTES);
   for (let i = 0; i < NUM_CHAINS; i++) {
     const element = sig.slice(i * HASH_LEN, (i + 1) * HASH_LEN);
-    tops.set(chain(element, CHAIN_MAX - d[i]), i * HASH_LEN);
+    tops.set(chain(pubSeed, i, d[i], CHAIN_MAX - d[i], element), i * HASH_LEN);
   }
   const recovered = keccak(tops);
   return recovered.every((b, i) => b === pubkey[i]);

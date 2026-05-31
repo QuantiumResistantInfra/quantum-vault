@@ -19,7 +19,7 @@ import { keccak_256 } from "@noble/hashes/sha3";
 import { bytesToHex } from "@noble/hashes/utils";
 import { generateMnemonic, mnemonicToEntropy, entropyToMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english";
-import { publicKey, secretKeyFromSeed, sign, SIGNATURE_BYTES } from "./wots";
+import { publicKey, publicSeed, secretKeyFromSeed, sign, SIGNATURE_BYTES } from "./wots";
 import {
   initSigBufferIx,
   openVaultIx,
@@ -67,11 +67,13 @@ export function assertSignOnce(vaultAddress: string, index: number, message: Uin
 
 export class VaultWallet {
   readonly master: Uint8Array;
+  readonly pubSeed: Uint8Array;
   readonly genesis: Uint8Array;
 
   constructor(master: Uint8Array) {
     if (master.length !== 32) throw new Error("master must be 32 bytes");
     this.master = master;
+    this.pubSeed = publicSeed(master);
     this.genesis = this.pubkeyAt(0);
   }
 
@@ -101,11 +103,11 @@ export class VaultWallet {
   }
 
   pubkeyAt(k: number): Uint8Array {
-    return publicKey(secretKeyFromSeed(this.seedAt(k)));
+    return publicKey(secretKeyFromSeed(this.seedAt(k)), this.pubSeed);
   }
 
   signAt(k: number, message: Uint8Array): Uint8Array {
-    return sign(secretKeyFromSeed(this.seedAt(k)), message);
+    return sign(secretKeyFromSeed(this.seedAt(k)), message, this.pubSeed);
   }
 
   /** Find which key index the on-chain `current_pubkey` corresponds to. */
@@ -169,7 +171,9 @@ export async function openVault(
   wallet: VaultWallet,
   depositLamports: bigint,
 ): Promise<string> {
-  return sendTx(conn, feePayer, [openVaultIx(feePayer.publicKey, wallet.genesis, depositLamports)]);
+  return sendTx(conn, feePayer, [
+    openVaultIx(feePayer.publicKey, wallet.genesis, wallet.pubSeed, depositLamports),
+  ]);
 }
 
 /** Deposit SOL by a plain transfer to the vault address (no program ix needed). */

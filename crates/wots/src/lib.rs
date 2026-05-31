@@ -85,12 +85,35 @@ pub fn keccak(data: &[u8]) -> Hash {
     out
 }
 
-/// Apply Keccak-256 to `input` `iterations` times (walk a hash chain forward).
-fn chain(mut input: Hash, iterations: usize) -> Hash {
-    for _ in 0..iterations {
-        input = keccak(&input);
+/// Derive the per-vault public seed from the 32-byte master seed. This is a
+/// public value (a hash of the secret seed) stored on-chain; it tweaks every
+/// chain hash so that no two vaults share a hash function (defeats multi-target
+/// attacks — the WOTS+ idea).
+pub fn public_seed(master: &[u8; 32]) -> Hash {
+    let mut buf = [0u8; 32 + 10];
+    buf[..32].copy_from_slice(master);
+    buf[32..].copy_from_slice(b"QV-PUBSEED");
+    keccak(&buf)
+}
+
+/// One tweaked hash step on chain `i` at position `p`:
+/// `keccak(pub_seed || i || p || x)`. The tweak makes each (vault, chain,
+/// position) a distinct one-way function.
+fn hash_step(pub_seed: &Hash, i: u8, p: u8, x: &Hash) -> Hash {
+    let mut buf = [0u8; HASH_LEN + 2 + HASH_LEN];
+    buf[..HASH_LEN].copy_from_slice(pub_seed);
+    buf[HASH_LEN] = i;
+    buf[HASH_LEN + 1] = p;
+    buf[HASH_LEN + 2..].copy_from_slice(x);
+    keccak(&buf)
+}
+
+/// Walk chain `i` `count` steps, starting at position `start_pos`.
+fn chain(pub_seed: &Hash, i: u8, start_pos: usize, count: usize, mut x: Hash) -> Hash {
+    for step in 0..count {
+        x = hash_step(pub_seed, i, (start_pos + step) as u8, &x);
     }
-    input
+    x
 }
 
 /// Expand the 224-bit message digest into `NUM_CHAINS` base-16 digits: each of
@@ -139,22 +162,23 @@ impl SecretKey {
         SecretKey { chains }
     }
 
-    /// Compute the compressed 32-byte public key (the vault commitment).
-    pub fn public_key(&self) -> PublicKey {
+    /// Compute the compressed 28-byte public key (the vault commitment), under
+    /// the vault's `pub_seed`.
+    pub fn public_key(&self, pub_seed: &Hash) -> PublicKey {
         let mut tops = [0u8; SIGNATURE_BYTES];
         for (i, c) in self.chains.iter().enumerate() {
-            let top = chain(*c, CHAIN_MAX);
+            let top = chain(pub_seed, i as u8, 0, CHAIN_MAX, *c);
             tops[i * HASH_LEN..(i + 1) * HASH_LEN].copy_from_slice(&top);
         }
         PublicKey(keccak(&tops))
     }
 
-    /// Sign `message`. **One-time use only** — never sign twice with one key.
-    pub fn sign(&self, message: &[u8]) -> Signature {
+    /// Sign `message` under `pub_seed`. **One-time use only.**
+    pub fn sign(&self, message: &[u8], pub_seed: &Hash) -> Signature {
         let d = digits(&keccak(message));
         let mut sig = [[0u8; HASH_LEN]; NUM_CHAINS];
         for (i, s) in sig.iter_mut().enumerate() {
-            *s = chain(self.chains[i], d[i] as usize);
+            *s = chain(pub_seed, i as u8, 0, d[i] as usize, self.chains[i]);
         }
         Signature(sig)
     }
@@ -169,11 +193,11 @@ impl PublicKey {
     ///
     /// This is the operation a Solana program runs on-chain: pure hashing, cheap
     /// in compute units relative to lattice verification.
-    pub fn verify(&self, message: &[u8], sig: &Signature) -> bool {
+    pub fn verify(&self, message: &[u8], sig: &Signature, pub_seed: &Hash) -> bool {
         let d = digits(&keccak(message));
         let mut tops = [0u8; SIGNATURE_BYTES];
         for (i, element) in sig.0.iter().enumerate() {
-            let top = chain(*element, CHAIN_MAX - d[i] as usize);
+            let top = chain(pub_seed, i as u8, d[i] as usize, CHAIN_MAX - d[i] as usize, *element);
             tops[i * HASH_LEN..(i + 1) * HASH_LEN].copy_from_slice(&top);
         }
         PublicKey(keccak(&tops)) == *self
@@ -184,7 +208,7 @@ impl PublicKey {
     /// stack. This matters on Solana, where stack frames are capped at 4 KB and a
     /// full signature is 1652 bytes — the on-chain spend path uses this so the
     /// only large buffer is `tops`, here inside this frame.
-    pub fn verify_slice(&self, message: &[u8], sig: &[u8]) -> bool {
+    pub fn verify_slice(&self, message: &[u8], sig: &[u8], pub_seed: &Hash) -> bool {
         if sig.len() != SIGNATURE_BYTES {
             return false;
         }
@@ -193,7 +217,7 @@ impl PublicKey {
         for i in 0..NUM_CHAINS {
             let mut element = [0u8; HASH_LEN];
             element.copy_from_slice(&sig[i * HASH_LEN..(i + 1) * HASH_LEN]);
-            let top = chain(element, CHAIN_MAX - d[i] as usize);
+            let top = chain(pub_seed, i as u8, d[i] as usize, CHAIN_MAX - d[i] as usize, element);
             tops[i * HASH_LEN..(i + 1) * HASH_LEN].copy_from_slice(&top);
         }
         PublicKey(keccak(&tops)) == *self
@@ -230,87 +254,105 @@ mod tests {
 
     const SEED: [u8; 32] = [7u8; 32];
 
+    fn ps() -> Hash {
+        public_seed(&SEED)
+    }
+
     #[test]
     fn sign_and_verify_roundtrip() {
         let sk = SecretKey::from_seed(&SEED);
-        let pk = sk.public_key();
+        let pk = sk.public_key(&ps());
         let msg = b"withdraw 1 SOL to alice";
-        let sig = sk.sign(msg);
-        assert!(pk.verify(msg, &sig), "valid signature must verify");
+        let sig = sk.sign(msg, &ps());
+        assert!(pk.verify(msg, &sig, &ps()), "valid signature must verify");
     }
 
     #[test]
     fn wrong_message_is_rejected() {
         let sk = SecretKey::from_seed(&SEED);
-        let pk = sk.public_key();
-        let sig = sk.sign(b"withdraw 1 SOL to alice");
+        let pk = sk.public_key(&ps());
+        let sig = sk.sign(b"withdraw 1 SOL to alice", &ps());
         assert!(
-            !pk.verify(b"withdraw 1 SOL to mallory", &sig),
+            !pk.verify(b"withdraw 1 SOL to mallory", &sig, &ps()),
             "signature must not verify against a different message"
         );
     }
 
     #[test]
+    fn wrong_pub_seed_is_rejected() {
+        // A signature made under one vault's pub_seed must not verify under
+        // another's — this is what defeats cross-vault multi-target attacks.
+        let sk = SecretKey::from_seed(&SEED);
+        let pk = sk.public_key(&ps());
+        let msg = b"hello";
+        let sig = sk.sign(msg, &ps());
+        let other_ps = public_seed(&[1u8; 32]);
+        assert!(!pk.verify(msg, &sig, &other_ps), "must not verify under a foreign pub_seed");
+    }
+
+    #[test]
     fn tampered_signature_is_rejected() {
         let sk = SecretKey::from_seed(&SEED);
-        let pk = sk.public_key();
+        let pk = sk.public_key(&ps());
         let msg = b"withdraw 1 SOL to alice";
-        let mut sig = sk.sign(msg);
+        let mut sig = sk.sign(msg, &ps());
         sig.0[0][0] ^= 0xff; // flip a byte
-        assert!(!pk.verify(msg, &sig), "tampered signature must be rejected");
+        assert!(!pk.verify(msg, &sig, &ps()), "tampered signature must be rejected");
     }
 
     #[test]
     fn wrong_key_is_rejected() {
         let sk = SecretKey::from_seed(&SEED);
-        let other_pk = SecretKey::from_seed(&[9u8; 32]).public_key();
+        let other_pk = SecretKey::from_seed(&[9u8; 32]).public_key(&ps());
         let msg = b"hello";
-        let sig = sk.sign(msg);
-        assert!(!other_pk.verify(msg, &sig), "must not verify under a foreign key");
+        let sig = sk.sign(msg, &ps());
+        assert!(!other_pk.verify(msg, &sig, &ps()), "must not verify under a foreign key");
     }
 
     #[test]
     fn verify_slice_matches_verify() {
         let sk = SecretKey::from_seed(&SEED);
-        let pk = sk.public_key();
+        let pk = sk.public_key(&ps());
         let msg = b"slice verify";
-        let sig = sk.sign(msg);
+        let sig = sk.sign(msg, &ps());
         let bytes = sig.to_bytes();
-        assert!(pk.verify_slice(msg, &bytes), "slice verify must accept a valid sig");
-        assert!(!pk.verify_slice(b"other", &bytes), "slice verify must reject wrong msg");
-        assert!(!pk.verify_slice(msg, &bytes[..bytes.len() - 1]), "wrong length must be rejected");
+        assert!(pk.verify_slice(msg, &bytes, &ps()), "slice verify must accept a valid sig");
+        assert!(!pk.verify_slice(b"other", &bytes, &ps()), "slice verify must reject wrong msg");
+        assert!(
+            !pk.verify_slice(msg, &bytes[..bytes.len() - 1], &ps()),
+            "wrong length must be rejected"
+        );
     }
 
     #[test]
     fn signature_wire_roundtrip() {
         let sk = SecretKey::from_seed(&SEED);
-        let pk = sk.public_key();
+        let pk = sk.public_key(&ps());
         let msg = b"roundtrip";
-        let sig = sk.sign(msg);
+        let sig = sk.sign(msg, &ps());
         let parsed = Signature::from_bytes(&sig.to_bytes());
-        assert!(pk.verify(msg, &parsed), "wire roundtrip must preserve validity");
+        assert!(pk.verify(msg, &parsed, &ps()), "wire roundtrip must preserve validity");
     }
 
     /// The checksum must stop the classic WOTS forgery: an attacker who only
     /// raises message digits (cheap — hashing forward) cannot also lower the
-    /// checksum digits without inverting the hash. We simulate the *honest* part
-    /// of that attack and confirm the recovered key no longer matches.
+    /// checksum digits without inverting the hash. We advance each message chain
+    /// by one real (tweaked) step and confirm the recovered key no longer matches.
     #[test]
     fn checksum_blocks_digit_raising_forgery() {
         let sk = SecretKey::from_seed(&SEED);
-        let pk = sk.public_key();
+        let pk = sk.public_key(&ps());
         let msg = b"pay 1";
-        let sig = sk.sign(msg);
+        let sig = sk.sign(msg, &ps());
+        let d = digits(&keccak(msg));
 
-        // Forge by advancing every message chain one extra step (raising digits).
         let mut forged = sig.clone();
-        for element in forged.0.iter_mut().take(MSG_DIGITS) {
-            *element = keccak(element);
+        for i in 0..MSG_DIGITS {
+            // Advance message chain i from position d[i] to d[i]+1.
+            forged.0[i] = hash_step(&ps(), i as u8, d[i], &forged.0[i]);
         }
-        // Some other message whose digest the attacker hoped to match — but the
-        // checksum chains weren't advanced backward, so verification fails.
         assert!(
-            !pk.verify(msg, &forged),
+            !pk.verify(msg, &forged, &ps()),
             "raising message digits without fixing checksum must fail"
         );
     }
@@ -326,10 +368,8 @@ mod tests {
 
     #[test]
     fn digit_bounds_hold() {
-        // Every digit must be a valid base-16 value so chain walks stay in range.
         let sk = SecretKey::from_seed(&SEED);
-        let sig = sk.sign(b"bounds check");
-        let _ = sig; // signing exercises digits(); verify covers the round trip.
+        let _ = sk.sign(b"bounds check", &ps());
         assert_eq!(NUM_CHAINS, 59);
         assert_eq!(CHAIN_MAX, 15);
     }

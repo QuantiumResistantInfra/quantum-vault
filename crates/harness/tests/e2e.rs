@@ -20,7 +20,7 @@ use solana_sdk::{
     system_instruction, system_program,
     transaction::Transaction,
 };
-use wots::SecretKey;
+use wots::{public_seed, SecretKey};
 
 const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
@@ -119,7 +119,14 @@ fn upload_signature(svm: &mut LiteSVM, payer: &Keypair, program_id: Pubkey, gene
     }
 }
 
-fn open_vault(svm: &mut LiteSVM, payer: &Keypair, program_id: Pubkey, genesis: [u8; 28], deposit: u64) -> Pubkey {
+fn open_vault(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    program_id: Pubkey,
+    genesis: [u8; 28],
+    pub_seed: [u8; 28],
+    deposit: u64,
+) -> Pubkey {
     let vault = vault_pda(&genesis, &program_id);
     send(
         svm,
@@ -131,7 +138,7 @@ fn open_vault(svm: &mut LiteSVM, payer: &Keypair, program_id: Pubkey, genesis: [
                 AccountMeta::new(payer.pubkey(), true),
                 AccountMeta::new_readonly(system_program::ID, false),
             ],
-            &VaultInstruction::OpenVault { genesis_pubkey: genesis, deposit },
+            &VaultInstruction::OpenVault { genesis_pubkey: genesis, pub_seed, deposit },
         )],
     );
     vault
@@ -199,17 +206,19 @@ fn token_balance(svm: &LiteSVM, ata: &Pubkey) -> u64 {
 fn sol_spend_and_rotate() {
     let (mut svm, payer, program_id) = setup();
 
-    let sk0 = SecretKey::from_seed(&[1u8; 32]);
-    let genesis: [u8; 28] = sk0.public_key().0;
-    let vault = open_vault(&mut svm, &payer, program_id, genesis, 2 * LAMPORTS_PER_SOL);
+    let seed0 = [1u8; 32];
+    let ps = public_seed(&seed0);
+    let sk0 = SecretKey::from_seed(&seed0);
+    let genesis: [u8; 28] = sk0.public_key(&ps).0;
+    let vault = open_vault(&mut svm, &payer, program_id, genesis, ps, 2 * LAMPORTS_PER_SOL);
     assert!(svm.get_account(&vault).unwrap().lamports >= 2 * LAMPORTS_PER_SOL);
 
     let destination = Keypair::new().pubkey();
-    let next: [u8; 28] = SecretKey::from_seed(&[2u8; 32]).public_key().0;
+    let next: [u8; 28] = SecretKey::from_seed(&[2u8; 32]).public_key(&ps).0;
     let amount = LAMPORTS_PER_SOL;
 
     let message = spend_sol_message(&genesis, amount, &destination, &next);
-    let sig = sk0.sign(&message).to_bytes();
+    let sig = sk0.sign(&message, &ps).to_bytes();
     upload_signature(&mut svm, &payer, program_id, genesis, &sig);
 
     let meta = send(
@@ -238,16 +247,18 @@ fn sol_spend_and_rotate() {
 fn forged_signature_is_rejected() {
     let (mut svm, payer, program_id) = setup();
 
-    let sk0 = SecretKey::from_seed(&[3u8; 32]);
-    let genesis: [u8; 28] = sk0.public_key().0;
-    let vault = open_vault(&mut svm, &payer, program_id, genesis, 2 * LAMPORTS_PER_SOL);
+    let seed0 = [3u8; 32];
+    let ps = public_seed(&seed0);
+    let sk0 = SecretKey::from_seed(&seed0);
+    let genesis: [u8; 28] = sk0.public_key(&ps).0;
+    let vault = open_vault(&mut svm, &payer, program_id, genesis, ps, 2 * LAMPORTS_PER_SOL);
 
     let attacker = SecretKey::from_seed(&[99u8; 32]);
     let destination = Keypair::new().pubkey();
-    let next: [u8; 28] = SecretKey::from_seed(&[4u8; 32]).public_key().0;
+    let next: [u8; 28] = SecretKey::from_seed(&[4u8; 32]).public_key(&ps).0;
     let amount = LAMPORTS_PER_SOL;
     let message = spend_sol_message(&genesis, amount, &destination, &next);
-    let bad_sig = attacker.sign(&message).to_bytes();
+    let bad_sig = attacker.sign(&message, &ps).to_bytes();
     upload_signature(&mut svm, &payer, program_id, genesis, &bad_sig);
 
     let tx = Transaction::new_signed_with_payer(
@@ -278,9 +289,11 @@ fn token_spend_and_rotate() {
     mint_to(&mut svm, &payer, &mint, &depositor_ata, &payer, 1_000_000_000);
 
     // Vault + its token account (created externally; deposits need no program ix).
-    let sk0 = SecretKey::from_seed(&[10u8; 32]);
-    let genesis: [u8; 28] = sk0.public_key().0;
-    let vault = open_vault(&mut svm, &payer, program_id, genesis, 0);
+    let seed0 = [10u8; 32];
+    let ps = public_seed(&seed0);
+    let sk0 = SecretKey::from_seed(&seed0);
+    let genesis: [u8; 28] = sk0.public_key(&ps).0;
+    let vault = open_vault(&mut svm, &payer, program_id, genesis, ps, 0);
     let vault_ata = create_ata(&mut svm, &payer, &vault, &mint);
     token_transfer(&mut svm, &payer, &depositor_ata, &vault_ata, &payer, 600_000_000);
     assert_eq!(token_balance(&svm, &vault_ata), 600_000_000);
@@ -288,11 +301,11 @@ fn token_spend_and_rotate() {
     // Spend 250 tokens to a fresh recipient.
     let recipient = Keypair::new().pubkey();
     let recipient_ata = create_ata(&mut svm, &payer, &recipient, &mint);
-    let next: [u8; 28] = SecretKey::from_seed(&[11u8; 32]).public_key().0;
+    let next: [u8; 28] = SecretKey::from_seed(&[11u8; 32]).public_key(&ps).0;
     let amount = 250_000_000u64;
 
     let message = spend_token_message(&genesis, &mint, amount, &recipient_ata, &next);
-    let sig = sk0.sign(&message).to_bytes();
+    let sig = sk0.sign(&message, &ps).to_bytes();
     upload_signature(&mut svm, &payer, program_id, genesis, &sig);
 
     let meta = send(
@@ -326,9 +339,11 @@ fn attacker_cannot_corrupt_victim_buffer() {
     let attacker = Keypair::new();
     svm.airdrop(&attacker.pubkey(), 10 * LAMPORTS_PER_SOL).unwrap();
 
-    let sk0 = SecretKey::from_seed(&[7u8; 32]);
-    let genesis: [u8; 28] = sk0.public_key().0;
-    open_vault(&mut svm, &victim, program_id, genesis, 2 * LAMPORTS_PER_SOL);
+    let seed0 = [7u8; 32];
+    let ps = public_seed(&seed0);
+    let sk0 = SecretKey::from_seed(&seed0);
+    let genesis: [u8; 28] = sk0.public_key(&ps).0;
+    open_vault(&mut svm, &victim, program_id, genesis, ps, 2 * LAMPORTS_PER_SOL);
 
     // Victim creates their (relayer-scoped) buffer.
     let victim_sigbuf = sigbuf_pda(&genesis, &victim.pubkey(), &program_id);

@@ -64,6 +64,7 @@ function ixData(variant: number, ...fields: Uint8Array[]): Buffer {
 export function openVaultIx(
   payer: PublicKey,
   genesis: Uint8Array,
+  pubSeed: Uint8Array,
   deposit: bigint,
 ): TransactionInstruction {
   return new TransactionInstruction({
@@ -73,7 +74,7 @@ export function openVaultIx(
       { pubkey: payer, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
     ],
-    data: ixData(0, genesis, u64le(deposit)),
+    data: ixData(0, genesis, pubSeed, u64le(deposit)),
   });
 }
 
