@@ -20,7 +20,20 @@ export type Cluster = "devnet" | "mainnet-beta";
 //  MAINNET CUTOVER: flip this one constant to "mainnet-beta" and set a real RPC
 //  (VITE_RPC_URL). Everything else — buttons, explorer links, RPC — follows.
 // ──────────────────────────────────────────────────────────────────────────
-export const NETWORK: Cluster = "devnet";
+/** Read a Vite env var (undefined under Node / the test scripts). */
+function viteEnv(key: string): string | undefined {
+  try {
+    return (import.meta as unknown as { env?: Record<string, string> }).env?.[key];
+  } catch {
+    return undefined;
+  }
+}
+
+// MAINNET CUTOVER: in the host's env (e.g. Vercel project settings) set
+//   VITE_NETWORK=mainnet-beta
+//   VITE_RPC_URL=<your paid RPC endpoint>
+// Defaults to devnet, so local dev and the committed code stay on devnet.
+export const NETWORK: Cluster = viteEnv("VITE_NETWORK") === "mainnet-beta" ? "mainnet-beta" : "devnet";
 export const IS_DEVNET = NETWORK === "devnet";
 
 const PUBLIC_RPC: Record<Cluster, string> = {
@@ -28,18 +41,9 @@ const PUBLIC_RPC: Record<Cluster, string> = {
   "mainnet-beta": "https://api.mainnet-beta.solana.com",
 };
 
-/** Read an optional custom RPC from Vite env (undefined under Node). */
-function envRpcUrl(): string | undefined {
-  try {
-    return (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_RPC_URL;
-  } catch {
-    return undefined;
-  }
-}
-
 /** App RPC. On mainnet set VITE_RPC_URL to a paid endpoint — the public
  *  mainnet RPC is heavily rate-limited. */
-export const RPC_URL: string = envRpcUrl() || PUBLIC_RPC[NETWORK];
+export const RPC_URL: string = viteEnv("VITE_RPC_URL") || PUBLIC_RPC[NETWORK];
 
 /** Devnet test scripts (verify-*.ts) always target devnet regardless of NETWORK. */
 export const DEVNET_RPC = PUBLIC_RPC.devnet;
