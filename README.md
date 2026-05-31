@@ -8,19 +8,22 @@ authorizes every withdrawal with a **hash-based Winternitz one-time signature**
 instead: there is no elliptic curve for Shor to attack, and verification is cheap
 enough to run on-chain with Keccak hashing.
 
+A single vault identity guards both **SOL and arbitrary SPL tokens** (USDC, etc.)
+under the same quantum-resistant key.
+
 ## Status
 
 | Component | What | State |
 |-----------|------|-------|
 | `wots` | Winternitz one-time signature core library | ✅ done, tested |
-| `quantum-vault` | Solana program (PDA vault + key rotation) | ✅ done, builds to BPF |
-| `harness` | end-to-end LiteSVM tests | ✅ done, passing |
+| `quantum-vault` | Solana program (PDA vault, SOL + SPL tokens, key rotation) | ✅ done, builds to BPF |
+| `harness` | end-to-end LiteSVM tests (SOL + token + forgery) | ✅ done, passing |
 
-**Proven working:** the end-to-end test opens a vault, spends from it with a
-Winternitz signature, and confirms the vault rotates to the next one-time key —
-running the real compiled BPF program. On-chain WOTS verification + transfer
-costs **~530k compute units** (over the 200k default, so a `ComputeBudget`
-instruction is required; well under the 1.4M max).
+**Proven working:** the end-to-end tests open a vault, spend SOL *and* SPL
+tokens from it with Winternitz signatures, and confirm the vault rotates to the
+next one-time key — running the real compiled BPF program. On-chain cost is
+**~505–565k compute units** per spend (over the 200k default, so a
+`ComputeBudget` instruction is required; well under the 1.4M max).
 
 ```bash
 cargo test -p harness -- --nocapture   # see the compute-unit readout
@@ -56,11 +59,22 @@ cargo run -p wots --example demo   # see the full lifecycle
 
 Funds live in a PDA whose address is bound to an immutable genesis WOTS public
 key, so the deposit address never changes. A withdrawal presents a Winternitz
-signature over `genesis || amount || destination || next_pubkey`; the program
-verifies it against the vault's current key, moves the lamports, and rotates
-`current_pubkey` to `next_pubkey` — retiring the spent one-time key forever.
-Authorization is purely cryptographic: any relayer can submit the transaction
-and pay the fee; only a valid WOTS signature moves funds.
+signature over the spend (domain-tagged, binding amount, destination, and the
+next key); the program verifies it against the vault's current key, moves the
+funds, and rotates `current_pubkey` to `next_pubkey` — retiring the spent
+one-time key forever. Authorization is purely cryptographic: any relayer can
+submit the transaction and pay the fee; only a valid WOTS signature moves funds.
+
+The same vault PDA owns its SPL associated token accounts and signs token
+transfers via `invoke_signed`, so one quantum-resistant key guards SOL and any
+number of token mints.
+
+### Instructions
+
+- `open_vault(genesis_pubkey, deposit)` — create + fund a vault
+- `spend(genesis_pubkey, amount, next_pubkey, signature)` — withdraw SOL, rotate
+- `deposit_token(genesis_pubkey, amount)` — deposit SPL tokens (permissionless)
+- `spend_token(genesis_pubkey, amount, next_pubkey, signature)` — withdraw SPL tokens, rotate
 
 ## Background
 
@@ -71,7 +85,7 @@ rationale (Falcon vs. WOTS, why the PDA layer, the protocol roadmap).
 
 ## Roadmap
 
-- SPL-token vaults (currently SOL/lamports)
+- ✅ SPL-token vaults
 - Native/Pinocchio port to lower the per-spend compute cost
 - TypeScript client + devnet deployment
 - Security audit

@@ -15,5 +15,6 @@ quantum-vault = { path = "../../programs/quantum-vault", default-features = fals
 # the on-chain syscall backend, so signatures verify identically.
 wots = { path = "../wots" }
 anchor-lang = "0.31.1"
+anchor-spl = "0.31.1"
 litesvm = "0.6"
 solana-sdk = "2.2"
