@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/qubit-banner.png" alt="Qubit — post-quantum secure vaults for Solana" width="100%" />
+</p>
+
 # Qubit
 
 Post-quantum secure vaults for Solana.

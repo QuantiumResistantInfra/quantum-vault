@@ -12,3 +12,7 @@ app/dist/
 .env.local
 app/.env
 app/.env.local
+
+# local working copies of brand assets (canonical versions live in brand/)
+/qubit-banner.png
+/qubit-twitter.png
